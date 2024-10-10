@@ -28,6 +28,18 @@ jobs:
         run: ./gradlew clean build --no-build-cache
       - name: JVM unit Tests with Coverage Report
         run: ./gradlew check
+      # tar the reports since its much faster uploading multiple files
+      - name: Tar Reports
+        if: always()
+        run: |
+          mkdir -p kanonproxy/build/reports/ &&
+          tar -czvf kanonproxy-reports.tar.gz -C kanonproxy/build reports
+      - name: Upload Reports
+        uses: actions/upload-artifact@v4.3.0
+        if: always()
+        with:
+          name: kanonproxy-reports
+          path: kanonproxy-reports.tar.gz
       - name: Upload Lib Unit Tests Report to CodeCov
         # https://github.com/codecov/codecov-action
         uses: codecov/codecov-action@v4
