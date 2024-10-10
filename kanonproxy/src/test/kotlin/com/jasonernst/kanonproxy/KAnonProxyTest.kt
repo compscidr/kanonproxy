@@ -50,6 +50,7 @@ class KAnonProxyTest {
 
         val response = kAnonProxy.takeResponse()
         assertTrue(response.nextHeaders is ICMPNextHeaderWrapper)
+        logger.debug("Got response: {}", response.nextHeaders)
         assertTrue((response.nextHeaders as ICMPNextHeaderWrapper).icmpHeader is ICMPv4EchoPacket)
     }
 
@@ -81,7 +82,7 @@ class KAnonProxyTest {
 
         val response = kAnonProxy.takeResponse()
         assertTrue(response.nextHeaders is ICMPNextHeaderWrapper)
-        logger.debug("Got response: ${response.nextHeaders}")
+        logger.debug("Got response: {}", response.nextHeaders)
         assertTrue((response.nextHeaders as ICMPNextHeaderWrapper).icmpHeader is ICMPv6EchoPacket)
     }
 }
