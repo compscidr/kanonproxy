@@ -53,7 +53,6 @@ class KAnonProxy(
             if (packet.nextHeaders is TransportHeader) {
                 logger.debug("Got transport packet")
                 val transportHeader = packet.nextHeaders as TransportHeader
-
             } else if (packet.nextHeaders is ICMPNextHeaderWrapper) {
                 val icmpPacket = (packet.nextHeaders as ICMPNextHeaderWrapper).icmpHeader
                 logger.debug("Got ICMP packet {}", icmpPacket)
