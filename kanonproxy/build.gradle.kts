@@ -38,6 +38,7 @@ dependencies {
     api(libs.icmp.common)
     implementation(libs.packetdumper)
     implementation(libs.knet)
+    testImplementation(libs.icmp.linux)
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.jupiter.engine)
     testImplementation(libs.logback.classic)

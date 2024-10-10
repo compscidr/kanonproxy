@@ -11,6 +11,7 @@ slf4j = "2.0.16"
 
 [libraries]
 icmp_common = { module = "com.jasonernst.icmp:icmp_common", version.ref = "icmp" }
+icmp_linux = { module = "com.jasonernst.icmp:icmp_linux", version.ref = "icmp" }
 junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "jupiter" }
 junit-jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "jupiter" }
 knet = { group = "com.jasonernst.knet", name = "knet", version.ref = "knet" }
