@@ -1,0 +1,37 @@
+name: Test and Reports
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+  pull_request:
+    types: [ opened, synchronize ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+      - name: Build with Gradle
+        run: ./gradlew clean build --no-build-cache
+      - name: JVM unit Tests with Coverage Report
+        run: ./gradlew check
+      - name: Upload Lib Unit Tests Report to CodeCov
+        # https://github.com/codecov/codecov-action
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: libunittests
+          files: ./kanonproxy/build/reports/jacoco/test/jacocoTestReport.xml
