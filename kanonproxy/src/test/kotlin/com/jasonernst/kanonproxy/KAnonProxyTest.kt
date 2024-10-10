@@ -20,7 +20,7 @@ class KAnonProxyTest {
 
     @Test fun testIcmpV4PacketHandling() {
         val sourceAddress = InetAddress.getByName("127.0.0.1")
-        val destinationAddress = InetAddress.getByName("8.8.8.8")
+        val destinationAddress = InetAddress.getByName("127.0.0.1")
         val icmpV4EchoPacket = ICMPv4EchoPacket(0u, 1u, 1u, false, "Test Data".toByteArray())
         icmpV4EchoPacket.checksum = icmpV4EchoPacket.computeChecksum(sourceAddress, destinationAddress)
         val ipv4Header =
@@ -56,7 +56,7 @@ class KAnonProxyTest {
 
     @Test fun testIcmpV6PacketHandling() {
         val sourceAddress = InetAddress.getByName("::1")
-        val destinationAddress = InetAddress.getByName("2001:4860:4860::8888")
+        val destinationAddress = InetAddress.getByName("::1")
         val icmpV6EchoPacket = ICMPv6EchoPacket(0u, 1u, 1u, false, "Test Data".toByteArray())
         icmpV6EchoPacket.checksum = icmpV6EchoPacket.computeChecksum(sourceAddress, destinationAddress)
         val ipv6Header =
