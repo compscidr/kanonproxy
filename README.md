@@ -1,4 +1,7 @@
 # kanonproxy
+[![JVM Tests](https://github.com/compscidr/kanonproxy/actions/workflows/test.yml/badge.svg)](https://github.com/compscidr/kanonproxy/actions/workflows/test.yml)&nbsp;
+[![codecov](https://codecov.io/gh/compscidr/kanonproxy/graph/badge.svg?token=yBstrWw9Mm)](https://codecov.io/gh/compscidr/kanonproxy)&nbsp;
+
 An anonymous proxy written in kotlin. 
 
 This project is meant to be a library that can run on android or linux. It does not provide
