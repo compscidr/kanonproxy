@@ -8,6 +8,7 @@ logback-classic = "1.5.9"
 mockk = "1.13.13"
 packetdumper = "0.0.9"
 slf4j = "2.0.16"
+testservers = "0.0.1"
 
 [libraries]
 icmp_common = { module = "com.jasonernst.icmp:icmp_common", version.ref = "icmp" }
@@ -19,6 +20,7 @@ logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "lo
 packetdumper = { module = "com.jasonernst.packetdumper:packetdumper", version.ref = "packetdumper" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+testservers = { group = "com.jasonernst.test-servers", name = "test-servers", version.ref = "testservers" }
 
 [bundles]
 test = ["junit-jupiter-api", "mockk"]

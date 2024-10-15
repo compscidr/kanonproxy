@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory
 import java.net.InetAddress
 
 @Timeout(20)
-class KAnonProxyTest {
+class IcmpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     @Test fun testIcmpV4PacketHandling() {
