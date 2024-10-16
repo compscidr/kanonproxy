@@ -1,28 +1,19 @@
 package com.jasonernst.kanonproxy
 
-import com.jasonernst.icmp_common.ICMPHeader
 import com.jasonernst.icmp_common.PacketHeaderException
 import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachableCodes
-import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachablePacket
-import com.jasonernst.icmp_common.v4.ICMPv4EchoPacket
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
-import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.kanonproxy.IcmpFactory.createDestinationUnreachable
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
-import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
-import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader.Companion.DEFAULT_WINDOW_SIZE
 import com.jasonernst.knet.transport.tcp.TcpHeaderFactory
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import org.slf4j.LoggerFactory
 import java.net.ConnectException
-import java.net.Inet4Address
-import java.net.Inet6Address
-import java.net.InetSocketAddress
 import java.net.NoRouteToHostException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -48,7 +39,10 @@ import kotlin.toUInt
  *   added. The MTU should thus be reduced my the maximum size of these IP and UDP headers that get prepended to the
  *   normal IP/Transport/Payload.
  */
-class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
+class TcpStateMachine(
+    var tcpState: TcpState,
+    val mtu: UShort,
+) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     // sequence and ack numbers for the TCP session
@@ -113,8 +107,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 return listOf(
                     TcpHeaderFactory.createRstPacket(
                         ipHeader,
-                        tcpHeader
-                    )
+                        tcpHeader,
+                    ),
                 )
             }
             TcpState.SYN_RECEIVED -> {
@@ -167,8 +161,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         return listOf(
             TcpHeaderFactory.createRstPacket(
                 ipHeader,
-                tcpHeader
-            )
+                tcpHeader,
+            ),
         )
     }
 
@@ -206,8 +200,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             return listOf(
                 TcpHeaderFactory.createRstPacket(
                     ipHeader,
-                    tcpHeader
-                )
+                    tcpHeader,
+                ),
             )
         }
         return if (tcpHeader.isSyn()) {
@@ -239,17 +233,18 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 return listOf(
                     TcpHeaderFactory.createRstPacket(
                         ipHeader,
-                        tcpHeader
-                    )
+                        tcpHeader,
+                    ),
                 )
             }
             logger.trace("Got SYN from client while in LISTEN state")
 
-            val response = TcpHeaderFactory.createSynAckPacket(
-                ipHeader,
-                tcpHeader,
-                mss
-            )
+            val response =
+                TcpHeaderFactory.createSynAckPacket(
+                    ipHeader,
+                    tcpHeader,
+                    mss,
+                )
             val responseTCPHeader = response.nextHeaders as TcpHeader
             logger.trace(
                 "Enqueuing SYN-ACK to client with Seq:" +
@@ -278,8 +273,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             return listOf(
                 TcpHeaderFactory.createRstPacket(
                     ipHeader,
-                    tcpHeader
-                )
+                    tcpHeader,
+                ),
             )
         }
     }
@@ -291,7 +286,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
     private fun handleSynReceivedState(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
-        session: Session
+        session: Session,
     ): List<Packet> {
         // page 69, lists states which should do this check first and return and ACK and drop
         // the segment, unless the RST bit is set.
@@ -301,8 +296,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                     ipHeader,
                     tcpHeader,
                     sendNext,
-                    recvNext
-                )
+                    recvNext,
+                ),
             )
         }
         if (tcpHeader.isRst()) {
@@ -331,8 +326,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             return listOf(
                 TcpHeaderFactory.createRstPacket(
                     ipHeader,
-                    tcpHeader
-                )
+                    tcpHeader,
+                ),
             )
         }
         if (!tcpHeader.isAck()) {
@@ -361,8 +356,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 listOf(
                     TcpHeaderFactory.createRstPacket(
                         ipHeader,
-                        tcpHeader
-                    )
+                        tcpHeader,
+                    ),
                 )
             }
         }
@@ -447,7 +442,8 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                     // recvWindowMax has rolled over and seq# hasn't
                     if (tcpHeader.sequenceNumber in recvNext until UInt.Companion.MAX_VALUE) {
                         // tcpHeader before rollover and inside left bound, now check segmentEnd
-                        if (segmentEnd <= recvWindowMax || segmentEnd > (
+                        if (segmentEnd <= recvWindowMax ||
+                            segmentEnd > (
                                 UInt.MAX_VALUE -
                                     recvWindow
                             )
@@ -591,7 +587,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 ipHeader,
                 tcpHeader,
                 sendNext,
-                recvNext
+                recvNext,
             )
         }
         return null
@@ -618,16 +614,17 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         if (payloadSize > 0u) {
             session.addPayloadForInternet(payload, payloadSize.toInt())
             recvNext = recvNext + ipHeader.getPayloadLength().toUInt() -
-                    tcpHeader.getHeaderLength().toUInt()
+                tcpHeader.getHeaderLength().toUInt()
             if (tcpHeader.isPsh()) {
                 pshReceived = true
             }
-            val dataAck = TcpHeaderFactory.createAckPacket(
-                ipHeader,
-                tcpHeader,
-                sendNext,
-                recvNext
-            )
+            val dataAck =
+                TcpHeaderFactory.createAckPacket(
+                    ipHeader,
+                    tcpHeader,
+                    sendNext,
+                    recvNext,
+                )
             // logger.trace("Got: $tcpHeader \nSending back: ${dataAck.ipNextHeader}: $tcpHeader")
             return dataAck
         }
@@ -653,7 +650,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 ipHeader,
                 tcpHeader,
                 sendNext,
-                recvNext
+                recvNext,
             )
         }
 
@@ -921,30 +918,56 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             try {
                 // if we don't reset these, the session will still have the old seq numbers
                 // in them
-                //lastIPHeader = ipHeader
-                //lastTransportHeader = tcpHeader
+                // lastIPHeader = ipHeader
+                // lastTransportHeader = tcpHeader
                 session.reestablishConnection()
             } catch (e: NoRouteToHostException) {
                 logger.error("No route to host re-establishing connection to $session.remoteAddress", e)
                 // TODO: revisit whether the from address for the ICMP packet should be this device ip instead.
-                val icmpPacket = when(ipHeader) {
-                    is Ipv4Header -> createDestinationUnreachable(ICMPv4DestinationUnreachableCodes.HOST_UNREACHABLE,
-                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
-                    is Ipv6Header -> createDestinationUnreachable(ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE,
-                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
-                    else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
-                }
+                val icmpPacket =
+                    when (ipHeader) {
+                        is Ipv4Header ->
+                            createDestinationUnreachable(
+                                ICMPv4DestinationUnreachableCodes.HOST_UNREACHABLE,
+                                ipHeader.destinationAddress,
+                                ipHeader,
+                                tcpHeader,
+                                payload,
+                            )
+                        is Ipv6Header ->
+                            createDestinationUnreachable(
+                                ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE,
+                                ipHeader.destinationAddress,
+                                ipHeader,
+                                tcpHeader,
+                                payload,
+                            )
+                        else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
+                    }
                 return listOf(icmpPacket)
             } catch (e: ConnectException) {
                 logger.error("Connection refused during re-connection to $session.remoteAddress", e)
                 // TODO: revisit whether the from address for the ICMP packet should be this device ip instead.
-                val icmpPacket = when(ipHeader) {
-                    is Ipv4Header -> createDestinationUnreachable(ICMPv4DestinationUnreachableCodes.PORT_UNREACHABLE,
-                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
-                    is Ipv6Header -> createDestinationUnreachable(ICMPv6DestinationUnreachableCodes.PORT_UNREACHABLE,
-                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
-                    else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
-                }
+                val icmpPacket =
+                    when (ipHeader) {
+                        is Ipv4Header ->
+                            createDestinationUnreachable(
+                                ICMPv4DestinationUnreachableCodes.PORT_UNREACHABLE,
+                                ipHeader.destinationAddress,
+                                ipHeader,
+                                tcpHeader,
+                                payload,
+                            )
+                        is Ipv6Header ->
+                            createDestinationUnreachable(
+                                ICMPv6DestinationUnreachableCodes.PORT_UNREACHABLE,
+                                ipHeader.destinationAddress,
+                                ipHeader,
+                                tcpHeader,
+                                payload,
+                            )
+                        else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
+                    }
                 return listOf(icmpPacket)
             } catch (e: Exception) {
                 // probably we're shutting down this session, no point to enqueue an ICMP

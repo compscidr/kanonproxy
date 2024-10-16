@@ -76,7 +76,11 @@ class KAnonProxy(
         }
     }
 
-    suspend fun handleTransportPacket(ipHeader: IpHeader, transportHeader: TransportHeader, payload: ByteArray) {
+    suspend fun handleTransportPacket(
+        ipHeader: IpHeader,
+        transportHeader: TransportHeader,
+        payload: ByteArray,
+    ) {
         var isNewSession = false
         val session =
             sessionTableBySessionKey.getOrPut(

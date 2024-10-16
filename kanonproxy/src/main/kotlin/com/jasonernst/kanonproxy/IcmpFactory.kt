@@ -17,7 +17,6 @@ import java.net.InetAddress
 import java.nio.ByteBuffer
 
 object IcmpFactory {
-
     /**
      * Create an ICMP host unreachable packet to send to the VPN client. The source will be the
      * VPN server itself.
