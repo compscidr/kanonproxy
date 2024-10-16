@@ -72,9 +72,9 @@ class Session(
     override fun toString(): String =
         "Session(sourceIp='$sourceIp', sourcePort=$sourcePort, destinationIp='$destinationIp', destinationPort=$destinationPort, protocol=$protocol)"
 
-    suspend fun handleReturnTraffic() {
+    fun handleReturnTraffic() {
         while (channel.isOpen) {
-            logger.debug("Waiting for return traffic on $this")
+            logger.debug("Waiting for return traffic on {}", this)
             val len = channel.read(readBuffer)
             if (len == -1) {
                 logger.error("Channel closed")
@@ -109,7 +109,7 @@ class Session(
                     }
                 val packet = Packet(ipHeader, udpHeader, payload)
                 returnQueue.put(packet)
-                logger.debug("Read $len bytes from $channel")
+                logger.debug("Read {} bytes from {}", len, channel)
                 readBuffer.clear()
             }
         }
