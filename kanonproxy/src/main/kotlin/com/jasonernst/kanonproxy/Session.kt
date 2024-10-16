@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
@@ -89,8 +90,8 @@ class Session(
                 val ipHeader =
                     if (sourceIp is Inet4Address) {
                         Ipv4Header(
-                            sourceAddress = destinationIp,
-                            destinationAddress = sourceIp,
+                            sourceAddress = destinationIp as Inet4Address,
+                            destinationAddress = sourceIp as Inet4Address,
                             protocol = IpType.UDP.value,
                             totalLength =
                                 (
@@ -101,8 +102,8 @@ class Session(
                         )
                     } else {
                         Ipv6Header(
-                            sourceAddress = destinationIp,
-                            destinationAddress = sourceIp,
+                            sourceAddress = destinationIp as Inet6Address,
+                            destinationAddress = sourceIp as Inet6Address,
                             protocol = IpType.UDP.value,
                             payloadLength = (40u + udpHeader.totalLength).toUShort(),
                         )

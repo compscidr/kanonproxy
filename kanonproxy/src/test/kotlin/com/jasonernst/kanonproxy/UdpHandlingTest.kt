@@ -10,6 +10,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
+import java.net.Inet4Address
 import java.net.InetAddress
 
 @Timeout(20)
@@ -30,9 +31,9 @@ class UdpHandlingTest {
 
     @Test fun testIpv4UdpPacketHandling() {
         val payload = "Test Data".toByteArray()
-        val sourceAddress = InetAddress.getByName("127.0.0.1")
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val sourcePort: UShort = 12345u
-        val destinationAddress = InetAddress.getByName("127.0.0.1")
+        val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = UdpEchoServer.UDP_DEFAULT_PORT.toUShort()
         val udpHeader = UdpHeader(sourcePort, destinationPort, payload.size.toUShort(), 0u)
         val packet =
