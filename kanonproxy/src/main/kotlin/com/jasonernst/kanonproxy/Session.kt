@@ -115,4 +115,15 @@ class Session(
             }
         }
     }
+
+    fun addPayloadForInternet(
+        payload: ByteArray,
+        length: Int,
+    ) {
+        TODO()
+    }
+
+    fun reestablishConnection() {
+        TODO()
+    }
 }

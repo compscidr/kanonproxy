@@ -1,13 +1,27 @@
 package com.jasonernst.kanonproxy
 
+import com.jasonernst.icmp_common.ICMPHeader
+import com.jasonernst.icmp_common.PacketHeaderException
 import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachableCodes
+import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachablePacket
+import com.jasonernst.icmp_common.v4.ICMPv4EchoPacket
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
+import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
+import com.jasonernst.kanonproxy.IcmpFactory.createDestinationUnreachable
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
+import com.jasonernst.knet.network.ip.IpType
+import com.jasonernst.knet.network.ip.v4.Ipv4Header
+import com.jasonernst.knet.network.ip.v6.Ipv6Header
+import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader.Companion.DEFAULT_WINDOW_SIZE
+import com.jasonernst.knet.transport.tcp.TcpHeaderFactory
+import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import org.slf4j.LoggerFactory
 import java.net.ConnectException
+import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.net.NoRouteToHostException
 import java.nio.ByteBuffer
@@ -27,6 +41,12 @@ import kotlin.toUInt
  * VPNClientPacketHandler's responsibility. If the remote side is not connected, the session
  * should enqueue the incoming packets until the connection is made, and then process them during
  * the notifyRemoteConnected() call.
+ *
+ * @param tcpState - the initial state to start the machine with
+ * @param mtu - the maximum transmission unit. If any additional headers are to be added, the MTU should reflect the
+ *   size of these extra headers. For instance, in a typical VPN app, there is often an additional IP and UDP header
+ *   added. The MTU should thus be reduced my the maximum size of these IP and UDP headers that get prepended to the
+ *   normal IP/Transport/Payload.
  */
 class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -54,7 +74,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
 
     private val srtt = 0u // SRTT smoothed round trip time
 
-    var retransmitQueue = ConcurrentLinkedQueue<Packet>() // var to make tests easier
+    var retransmitQueue = ConcurrentLinkedQueue<RetransmittablePacket>() // var to make tests easier
 
     // set when we send out FIN so we know whether we've received an ACK for it or not.
     var timeWaitTime = 0L
@@ -116,7 +136,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 return handleCloseWaitState(ipHeader, tcpHeader, payload, session)
             }
             TcpState.TIME_WAIT -> {
-                return handleTimeWaitState(ipHeader, tcpHeader, session)
+                return handleTimeWaitState(ipHeader, tcpHeader, payload, session)
             }
             TcpState.LAST_ACK -> {
                 return handleLastAckState(ipHeader, tcpHeader)
@@ -138,7 +158,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         //    by this means."
 
         // page 65: An incoming segment containing a RST is discarded.
-        if (TcpHeader.isRst()) {
+        if (tcpHeader.isRst()) {
             logger.error("Got RST in CLOSED state, ignoring: $this")
             return emptyList()
         }
@@ -160,7 +180,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         tcpHeader: TcpHeader,
     ): List<Packet> {
         // page 65: An incoming segment containing a RST is discarded.
-        if (TcpHeader.isRst()) {
+        if (tcpHeader.isRst()) {
             logger.error("Got RST in LISTEN state, ignoring: $this")
             return emptyList()
         }
@@ -174,13 +194,13 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         // pg 64: Any acknowledgment is bad if it arrives on a connection still in
         //        the LISTEN state.  An acceptable reset segment should be formed
         //        for any arriving ACK-bearing segment
-        if (TcpHeader.isAck()) {
+        if (tcpHeader.isAck()) {
             logger.error("Received ACK in LISTEN state. Enqueuing RST moving to CLOSED state: $this")
             tcpState = TcpState.CLOSED
             isClosed = true
-            val dummyBuffer = ByteBuffer.allocate(UShort.toInt())
-            dummyBuffer.put(IpHeader.toByteArray())
-            dummyBuffer.put(TcpHeader.toByteArray())
+            val dummyBuffer = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
+            dummyBuffer.put(ipHeader.toByteArray())
+            dummyBuffer.put(tcpHeader.toByteArray())
             dummyBuffer.flip()
             // logger.trace("PACKET: ${BufferUtil.toHexString(dummyBuffer, 0, dummyBuffer.limit())}")
             return listOf(
@@ -190,26 +210,26 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 )
             )
         }
-        return if (TcpHeader.isSyn()) {
+        return if (tcpHeader.isSyn()) {
             retransmitQueue.clear() // just to be sure we start in a fresh state
 
             var foundMSS = false
-            for (option in TcpHeader.getOptions()) {
-                if (option is xyz.bumpapp.transport.tcp.TCPOptionMaximumSegmentSize) {
+            for (option in tcpHeader.getOptions()) {
+                if (option is TcpOptionMaximumSegmentSize) {
                     foundMSS = true
                     // assuming the client MSS is already taking into account the reduction of the
                     // MTU - BUMP, IP, UDP headers via the MTU call on the construction of the VPN
                     // android client. TODO: make sure the same is true with the standalone stuff
-                    // logger.debug("MSS proposed by client: ${option.mss}")
+                    logger.debug("MSS proposed by client: ${option.mss}")
 
-                    val serverMSS = UInt.toUShort()
-                    // logger.debug("MSS proposed by server: $serverMSS")
+                    val serverMSS = mtu
+                    logger.debug("MSS proposed by server: $serverMSS")
 
                     mss =
-                        if (serverMSS compareTo xyz.bumpapp.transport.tcp.TCPOptionMaximumSegmentSize.mss) {
+                        if (serverMSS < option.mss) {
                             serverMSS
                         } else {
-                            xyz.bumpapp.transport.tcp.TCPOptionMaximumSegmentSize.mss
+                            option.mss
                         }
                     logger.debug("Using MSS: $mss")
                 }
@@ -230,23 +250,18 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 tcpHeader,
                 mss
             )
-            val responseTCPHeader = Packet.ipNextHeader as TcpHeader
+            val responseTCPHeader = response.nextHeaders as TcpHeader
             logger.trace(
                 "Enqueuing SYN-ACK to client with Seq:" +
-                    " ${UInt.toLong()}, " +
-                    "ACK: ${UInt.toLong()} " +
-                    "${Packet.ipHeader} $responseTCPHeader: $this",
+                    " ${responseTCPHeader.sequenceNumber.toLong()}, " +
+                    "ACK: ${responseTCPHeader.acknowledgementNumber.toLong()} " +
+                    "${response.ipHeader} $responseTCPHeader: $this",
             )
-            initialRecvSequence = TcpHeader.sequenceNumber
-            initialSendSequence = TcpHeader.sequenceNumber
+            initialRecvSequence = responseTCPHeader.sequenceNumber
+            initialSendSequence = responseTCPHeader.sequenceNumber
             sendNext = initialSendSequence + 1u
-            recvNext = TcpHeader.sequenceNumber + 1u
+            recvNext = responseTCPHeader.sequenceNumber + 1u
             sendUnacknowledged = initialSendSequence
-//            logger.trace(
-//                "Session sendNext: ${Integer.toUnsignedString(
-//                    sendNext.toInt(),
-//                )} recvNext: $recvNext. Changing state to SYN_RECEIVED: $this",
-//            )
             tcpState = TcpState.SYN_RECEIVED
             listOf(response)
         } else {
@@ -276,13 +291,13 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
     private fun handleSynReceivedState(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        session: Session
     ): List<Packet> {
         // page 69, lists states which should do this check first and return and ACK and drop
         // the segment, unless the RST bit is set.
-        if (!isInWindow(ipHeader, tcpHeader) && !TcpHeader.isRst()) {
+        if (!isInWindow(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
             return listOf(
-                TcpHeaderFactory.createACKPacket(
+                TcpHeaderFactory.createAckPacket(
                     ipHeader,
                     tcpHeader,
                     sendNext,
@@ -290,7 +305,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 )
             )
         }
-        if (TcpHeader.isRst()) {
+        if (tcpHeader.isRst()) {
             // Page 37:  If the receiver was
             //  in SYN-RECEIVED state and had previously been in the LISTEN state,
             //  then the receiver returns to the LISTEN state.
@@ -303,7 +318,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             isClosed = true
             return emptyList()
         }
-        if (TcpHeader.isSyn()) {
+        if (tcpHeader.isSyn()) {
             // page 71: If the SYN is in the window it is an error, send a reset, any
             //        outstanding RECEIVEs and SEND should receive "reset" responses,
             //        all segment queues should be flushed, the user should also
@@ -320,43 +335,21 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 )
             )
         }
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
             return emptyList()
         } else {
-            return if (TcpHeader.acknowledgementNumber contains sendUnacknowledged..sendNext) {
+            return if (tcpHeader.acknowledgementNumber in sendUnacknowledged..sendNext) {
                 // page 72: If the ACK acknowledges our SYN-ACK then enter ESTABLISHED
                 //        state and return.
-//                logger.trace(
-//                    "Got ACK from client while in SYN_RECEIVED state, changing state to " +
-//                        "ESTABLISHED: $this",
-//                )
                 tcpState = TcpState.ESTABLISHED
-
                 removeAckedPacketsFromRetransmit()
-
                 // page 75: check for FIN bit, and if set, move to CLOSE-WAIT state
-                if (TcpHeader.isFin()) {
+                if (tcpHeader.isFin()) {
                     recvNext++
-//                    logger.trace(
-//                        "Got FIN from client while in ESTABLISHED (just after SYN)" +
-//                            " state, changing state to CLOSE_WAIT: $this",
-//                    )
                     tcpState = TcpState.CLOSE_WAIT
-                    if (session is xyz.bumpapp.vpn.server.session.InternetTCPSession) {
-                        xyz.bumpapp.vpn.server.session.InternetSession.isVPNClientAborting = true
-                    }
-
-                    if (session is xyz.bumpapp.vpn.server.session.InternetTCPSession) {
-                        return TcpHeaderFactory.encapsulateSessionBuffer(
-                            session
-                        )
-                    } else {
-                        // todo: figure out how to handle this for the light session
-                    }
                 }
-
                 emptyList()
             } else {
                 // page 72: If the ACK is not acceptable then form a reset segment,
@@ -393,30 +386,30 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
     ): Boolean {
-        val recvWindowMax = recvNext + toUInt()
+        val recvWindowMax = recvNext + recvWindow.toUInt()
         logger.trace("RECV window from $recvNext to $recvWindowMax: $tcpHeader")
         logger.trace("$tcpHeader")
-        val segmentLength = IpHeader.getPayloadLength() - TcpHeader.getHeaderLength()
+        val segmentLength = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
         logger.trace(
-            "TCP SEQ START: ${TcpHeader.sequenceNumber} END: " +
-                "${TcpHeader.sequenceNumber + segmentLength}",
+            "TCP SEQ START: ${tcpHeader.sequenceNumber} END: " +
+                "${tcpHeader.sequenceNumber + segmentLength}",
         )
-        if (segmentLength equals 0u) {
-            return if (recvWindow equals UInt.toUShort()) {
-                if (TcpHeader.sequenceNumber equals recvNext) {
+        if (segmentLength == 0u) {
+            return if (recvWindow == (0u).toUShort()) {
+                if (tcpHeader.sequenceNumber == recvNext) {
                     true
                 } else {
                     logger.warn(
                         "SequenceNumberNotInWindow: Segment length is 0, recvWindow is 0." +
                             " Got packet with sequence number " +
-                            "${TcpHeader.sequenceNumber} but expected $recvNext: $this",
+                            "${tcpHeader.sequenceNumber} but expected $recvNext: $this",
                     )
                     false
                 }
             } else {
-                if (TcpHeader.sequenceNumber contains recvNext until recvWindowMax) {
+                if (tcpHeader.sequenceNumber in recvNext until recvWindowMax) {
                     true
-                } else if (TcpHeader.sequenceNumber compareTo (UInt.Companion.MAX_VALUE - recvWindow)) {
+                } else if (tcpHeader.sequenceNumber > (UInt.Companion.MAX_VALUE - recvWindow)) {
                     /**
                      * Rollover error was found when a tcpEchoSessionTest was created for a
                      * sequence number when
@@ -434,36 +427,36 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 } else {
                     logger.warn(
                         "SequenceNumberNotInWindow: Segment length is 0, but sequence number" +
-                            " ${TcpHeader.sequenceNumber} is not in window from $recvNext to $recvWindowMax: $this",
+                            " ${tcpHeader.sequenceNumber} is not in window from $recvNext to $recvWindowMax: $this",
                     )
                     false
                 }
             }
         } else {
-            return if (recvWindow equals UInt.toUShort()) {
+            return if (recvWindow == (0u).toUShort()) {
                 logger.warn(
                     "SequenceNumberNotInWindow: recvWindow is 0, so we are not accepting" +
                         " any data packets, just control: $this",
                 )
                 false
             } else {
-                val segmentEnd = (TcpHeader.sequenceNumber + segmentLength) - 1U
+                val segmentEnd = (tcpHeader.sequenceNumber + segmentLength) - 1U
 
                 // Check left bound before rollback & within Short window
-                if (TcpHeader.sequenceNumber compareTo (UInt.Companion.MAX_VALUE - recvWindow)) {
+                if (tcpHeader.sequenceNumber >= (UInt.Companion.MAX_VALUE - recvWindow)) {
                     // recvWindowMax has rolled over and seq# hasn't
-                    if (TcpHeader.sequenceNumber contains recvNext until UInt.Companion.MAX_VALUE) {
+                    if (tcpHeader.sequenceNumber in recvNext until UInt.Companion.MAX_VALUE) {
                         // tcpHeader before rollover and inside left bound, now check segmentEnd
-                        if (segmentEnd compareTo recvWindowMax || segmentEnd compareTo (
-                                UInt.Companion.MAX_VALUE -
+                        if (segmentEnd <= recvWindowMax || segmentEnd > (
+                                UInt.MAX_VALUE -
                                     recvWindow
                             )
                         ) {
                             // segment end either before rollover or before window max (right bound)
                             // This final line checks the C9 case (starting before rollover
                             // but ending after, inside recvWindow)
-                            if (TcpHeader.sequenceNumber compareTo (UInt.Companion.MAX_VALUE - recvWindow) &&
-                                recvNext compareTo recvWindow
+                            if (tcpHeader.sequenceNumber >= (UInt.MAX_VALUE - recvWindow) &&
+                                recvNext < recvWindow
                             ) {
                                 logger.warn(
                                     "SequenceNumberNotInWindow: Sequence number is" +
@@ -491,10 +484,10 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 } else {
                     // Seq# is before the UShort window, therefore check left & right bound simply
                     // First check if there is a weird rollback on recvNext - 1U but not on the seq#
-                    if (recvNext - 1U compareTo (UInt.Companion.MAX_VALUE - recvWindow) &&
-                        TcpHeader.sequenceNumber compareTo recvWindow
+                    if (recvNext - 1U >= (UInt.MAX_VALUE - recvWindow) &&
+                        tcpHeader.sequenceNumber < recvWindow
                     ) {
-                        if (segmentEnd compareTo recvWindowMax) {
+                        if (segmentEnd < recvWindowMax) {
                             true
                         } else {
                             logger.warn(
@@ -505,15 +498,15 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                         }
                     } else {
                         // No weird rollbacks, simplest case here
-                        if (TcpHeader.sequenceNumber contains recvNext until recvWindowMax &&
-                            segmentEnd contains recvNext - 1U until recvWindowMax
+                        if (tcpHeader.sequenceNumber in recvNext until recvWindowMax &&
+                            segmentEnd in recvNext - 1U until recvWindowMax
                         ) {
                             true
                         } else {
                             logger.warn(
                                 "SequenceNumberNotInWindow, no rollbacks but is out " +
                                     "of range SEQ: {}, SEGMENT END: {} RECVNEXT: {}, RECVWINDOWMAX: {}",
-                                TcpHeader.sequenceNumber,
+                                tcpHeader.sequenceNumber,
                                 segmentEnd,
                                 recvNext,
                                 recvWindowMax,
@@ -553,22 +546,17 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
     fun sendWindowUpdate(tcpHeader: TcpHeader) {
         // first: check if the sequence number is newer than the sequence number when we last
         // updated the window
-        if (sendWindowUpdateSequence compareTo TcpHeader.sequenceNumber ||
+        if (sendWindowUpdateSequence < tcpHeader.sequenceNumber ||
             // otherwise check if the last time we updated the window was the packet we're waiting
             // for an ACK from, and the ACK packet update sequence is newer
             (
-                sendWindowUpdateSequence equals sendUnacknowledged &&
-                    sendWindowUpdateAck compareTo TcpHeader.acknowledgementNumber
+                sendWindowUpdateSequence == sendUnacknowledged &&
+                    sendWindowUpdateAck <= tcpHeader.acknowledgementNumber
             )
         ) {
-            sendWindow = TcpHeader.windowSize
-            sendWindowUpdateSequence = TcpHeader.sequenceNumber
-            sendWindowUpdateAck = TcpHeader.acknowledgementNumber
-//            logger.trace(
-//                "ADJUSTING SEND WINDOW: sendWindow: $sendWindow, sendWindowUpdateSequence: " +
-//                    "$sendWindowUpdateSequence, sendWindowUpdateAck: " +
-//                    "$sendWindowUpdateAck, SND.UNA: $sendUnacknowledged",
-//            )
+            sendWindow = tcpHeader.windowSize
+            sendWindowUpdateSequence = tcpHeader.sequenceNumber
+            sendWindowUpdateAck = tcpHeader.acknowledgementNumber
         }
     }
 
@@ -581,17 +569,17 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
     ): Packet? {
-        if (TcpHeader.acknowledgementNumber contains (sendUnacknowledged + 1u)..sendNext) {
-            sendUnacknowledged = TcpHeader.acknowledgementNumber
+        if (tcpHeader.acknowledgementNumber in (sendUnacknowledged + 1u)..sendNext) {
+            sendUnacknowledged = tcpHeader.acknowledgementNumber
 
             removeAckedPacketsFromRetransmit()
             sendWindowUpdate(tcpHeader)
-        } else if (TcpHeader.acknowledgementNumber compareTo sendUnacknowledged) {
+        } else if (tcpHeader.acknowledgementNumber < sendUnacknowledged) {
             // page 72: If the ACK is a duplicate (the sequence number of the
             //        segment acknowledged is below SND.UNA) then it can be
             //        ignored.
             logger.warn("Got duplicate ACK from client, ignoring: $tcpHeader")
-        } else if (TcpHeader.acknowledgementNumber compareTo sendNext) {
+        } else if (tcpHeader.acknowledgementNumber > sendNext) {
             // page 72: If the ACK acknowledges something not yet sent (the
             //        acknowledgment number is above SND.NXT) then send an ACK,
             //        drop the segment, and return.
@@ -599,7 +587,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 "Got ACK from client which acknowledges something not yet sent," +
                     " ignoring: $tcpHeader",
             )
-            return TcpHeaderFactory.createACKPacket(
+            return TcpHeaderFactory.createAckPacket(
                 ipHeader,
                 tcpHeader,
                 sendNext,
@@ -618,7 +606,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        session: Session,
     ): Packet? {
         // todo: use the remaining recv buffer capacity to limit how much is actually accepted
         // https://linear.app/bumpapp/issue/BUMP-310/tcp-adjust-the-recv-window
@@ -626,26 +614,15 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         // constant (reduce the window size by the difference between the amount of data
         // accepted and the amount of data in the segment)
         // see page 74
-        val payloadSize = IpHeader.getPayloadLength() - TcpHeader.getHeaderLength()
-        if (payloadSize compareTo 0u) {
-            if (session is xyz.bumpapp.vpn.server.session.InternetTCPSession) {
-                xyz.bumpapp.vpn.server.session.InternetTCPSession.addPayloadForInternet(
-                    payload,
-                    UInt.toInt()
-                )
-            } else {
-                // todo: figure out what to do here for TCPLightSession
-            }
-//            logger.trace(
-//                "recvNext: $recvNext, adding $payloadSize bytes to buffer, new " +
-//                    "recvNext: ${(recvNext + payloadSize)}: $tcpHeader",
-//            )
-            recvNext = recvNext + toUInt() -
-                    toUInt()
-            if (TcpHeader.isPsh()) {
+        val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+        if (payloadSize > 0u) {
+            session.addPayloadForInternet(payload, payloadSize.toInt())
+            recvNext = recvNext + ipHeader.getPayloadLength().toUInt() -
+                    tcpHeader.getHeaderLength().toUInt()
+            if (tcpHeader.isPsh()) {
                 pshReceived = true
             }
-            val dataAck = TcpHeaderFactory.createACKPacket(
+            val dataAck = TcpHeaderFactory.createAckPacket(
                 ipHeader,
                 tcpHeader,
                 sendNext,
@@ -670,9 +647,9 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         // the segment, unless the RST bit is set.
         // todo: debug whats up here
         // https://linear.app/bumpapp/issue/BUMP-309/determine-why-isinwindow-is-often-reporting-out-of-window-packets
-        if (!isInWindow(ipHeader, tcpHeader) && !TcpHeader.isRst()) {
+        if (!isInWindow(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
             logger.warn("NOT IN WINDOW! ACK-ing and dropping segment: $tcpHeader")
-            return TcpHeaderFactory.createACKPacket(
+            return TcpHeaderFactory.createAckPacket(
                 ipHeader,
                 tcpHeader,
                 sendNext,
@@ -681,14 +658,14 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         }
 
         // page 69
-        if (TcpHeader.isRst()) {
+        if (tcpHeader.isRst()) {
             logger.error("Got RST from client in state $tcpState, changing state to CLOSED: $this")
             tcpState = TcpState.CLOSED
             isClosed = true
             return TcpHeaderFactory.createRstPacket(ipHeader, tcpHeader)
         }
 
-        if (TcpHeader.isSyn()) {
+        if (tcpHeader.isSyn()) {
             // page 71: If the SYN is in the window it is an error, send a reset, any
             //        outstanding RECEIVEs and SEND should receive "reset" responses,
             //        all segment queues should be flushed, the user should also
@@ -718,21 +695,21 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse equals null) {
+        if (basicResponse != null) {
             return listOf(basicResponse)
         }
 
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
             return emptyList()
         } else {
             val responses = ArrayList<Packet>()
             val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse equals null) {
+            if (ackResponse != null) {
                 responses.add(ackResponse)
                 return responses
             }
@@ -741,44 +718,26 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
             val dataAck = processText(ipHeader, tcpHeader, payload, session)
-            if (dataAck equals null) {
+            if (dataAck != null) {
                 responses.add(dataAck)
             }
 
             // page 75: check for FIN bit, and if set, move to CLOSE-WAIT state
-            if (TcpHeader.isFin()) {
+            if (tcpHeader.isFin()) {
                 pshReceived = true
                 recvNext++
-//                logger.trace(
-//                    "Got FIN from client while in ESTABLISHED state, changing state " +
-//                        "to CLOSE_WAIT: $this",
-//                )
-                tcpState = TcpState.CLOSE_WAIT
-                if (session is xyz.bumpapp.vpn.server.session.InternetTCPSession) {
-                    xyz.bumpapp.vpn.server.session.InternetSession.isVPNClientAborting = true
-                }
+
                 // add an ACK for the FIN
                 responses.add(
-                    TcpHeaderFactory.createACKPacket(
+                    TcpHeaderFactory.createAckPacket(
                         ipHeader,
                         tcpHeader,
                         sendNext,
                         recvNext,
                     ),
                 )
-                // logger.trace("TRYING TO MAKE AN ACK WITH $recvNext")
-                // add any remaining payload which in enqueued, along with the FIN-ACK when
-                // this is done the encapsulate will take care of transitioning from CLOSE_WAIT
-                // to FINAL_ACK
-                if (session is xyz.bumpapp.vpn.server.session.InternetTCPSession) {
-                    responses.addAll(
-                        TcpHeaderFactory.encapsulateSessionBuffer(
-                            session
-                        )
-                    )
-                } else {
-                    // todo: figure out what to do here for TCPLightSession
-                }
+
+                // todo: some type of flushing of any remaining data
             }
 
             return responses
@@ -794,21 +753,21 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse equals null) {
+        if (basicResponse != null) {
             return listOf(basicResponse)
         }
 
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
             return emptyList()
         } else {
             val responses = ArrayList<Packet>()
             val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse equals null) {
+            if (ackResponse != null) {
                 responses.add(ackResponse)
                 return responses
             }
@@ -818,22 +777,18 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
             val dataAck = processText(ipHeader, tcpHeader, payload, session)
-            if (dataAck equals null) {
+            if (dataAck != null) {
                 responses.add(dataAck)
             }
 
             // got ACK for FIN, transition to FIN_WAIT_2
-            if (TcpHeader.acknowledgementNumber equals finSeq) {
+            if (tcpHeader.acknowledgementNumber == finSeq) {
                 finHasBeenAcked = true
-//                logger.trace(
-//                    "Got ACK: ${tcpHeader.acknowledgementNumber} for FIN: $finSeq, " +
-//                        "transitioning to FIN_WAIT_2: $this",
-//                )
                 tcpState = TcpState.FIN_WAIT_2
             }
 
             // page 75: check for FIN bit. If ours has been ACKd, then move to TIME_WAIT
-            if (TcpHeader.isFin()) {
+            if (tcpHeader.isFin()) {
                 pshReceived = true
                 recvNext++
                 tcpState =
@@ -841,15 +796,11 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                         timeWaitTime = System.currentTimeMillis()
                         TcpState.TIME_WAIT
                     } else {
-//                        logger.trace(
-//                            "Got FIN from client while in FIN_WAIT_1 state, changing " +
-//                                "state to CLOSING: $this",
-//                        )
                         TcpState.CLOSING
                     }
                 // add an ACK for the FIN
                 responses.add(
-                    TcpHeaderFactory.createACKPacket(
+                    TcpHeaderFactory.createAckPacket(
                         ipHeader,
                         tcpHeader,
                         sendNext,
@@ -865,21 +816,21 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse equals null) {
+        if (basicResponse != null) {
             return listOf(basicResponse)
         }
 
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
             return emptyList()
         } else {
             val responses = ArrayList<Packet>()
             val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse equals null) {
+            if (ackResponse != null) {
                 responses.add(ackResponse)
                 return responses
             }
@@ -888,7 +839,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
             val dataAck = processText(ipHeader, tcpHeader, payload, session)
-            if (dataAck equals null) {
+            if (dataAck != null) {
                 responses.add(dataAck)
             }
 
@@ -897,18 +848,14 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             // here. (page  73)
 
             // page 75: check for FIN bit, and if set, move to TIME-WAIT
-            if (TcpHeader.isFin()) {
+            if (tcpHeader.isFin()) {
                 pshReceived = true
                 recvNext++
-//                logger.trace(
-//                    "Got FIN from client while in FIN-WAIT-2 state, changing state " +
-//                        "to TIME_WAIT: $this",
-//                )
                 timeWaitTime = System.currentTimeMillis()
                 tcpState = TcpState.TIME_WAIT
                 // add an ACK for the FIN
                 responses.add(
-                    TcpHeaderFactory.createACKPacket(
+                    TcpHeaderFactory.createAckPacket(
                         ipHeader,
                         tcpHeader,
                         sendNext,
@@ -925,21 +872,21 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse equals null) {
+        if (basicResponse != null) {
             return listOf(basicResponse)
         }
 
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
             return emptyList()
         } else {
             val responses = ArrayList<Packet>()
             val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse equals null) {
+            if (ackResponse != null) {
                 responses.add(ackResponse)
                 return responses
             }
@@ -948,15 +895,11 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
             val dataAck = processText(ipHeader, tcpHeader, payload, session)
-            if (dataAck equals null) {
+            if (dataAck != null) {
                 responses.add(dataAck)
             }
 
-            if (TcpHeader.acknowledgementNumber equals finSeq) {
-//                logger.trace(
-//                    "Got ACK from client which acknowledges FIN, changing state " +
-//                        "to TIME_WAIT: $this",
-//                )
+            if (tcpHeader.acknowledgementNumber == finSeq) {
                 timeWaitTime = System.currentTimeMillis()
                 tcpState = TcpState.TIME_WAIT
             }
@@ -967,61 +910,42 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
     private fun handleTimeWaitState(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        payload: ByteArray,
+        session: Session,
     ): List<Packet> {
         // this diverges from RFC793 in the case of TIME_WAIT so we don't have the long wait
         // before we can reuse the port. See:
         // https://linear.app/bumpapp/issue/BUMP-379/tcp-implement-a-fix-for-long-delay-on-server-side-teardown
-        if (TcpHeader.isSyn()) {
+        if (tcpHeader.isSyn()) {
             tcpState = TcpState.CLOSED
             try {
                 // if we don't reset these, the session will still have the old seq numbers
                 // in them
-                xyz.bumpapp.vpn.server.session.TransportSession.lastIPHeader = ipHeader
-                xyz.bumpapp.vpn.server.session.TransportSession.lastTransportHeader = tcpHeader
-                if (session is xyz.bumpapp.vpn.server.session.InternetTCPSession) {
-                    xyz.bumpapp.vpn.server.session.InternetTCPSession.reestablishConnection()
-                }
+                //lastIPHeader = ipHeader
+                //lastTransportHeader = tcpHeader
+                session.reestablishConnection()
             } catch (e: NoRouteToHostException) {
                 logger.error("No route to host re-establishing connection to $session.remoteAddress", e)
-                val code =
-                    when (xyz.bumpapp.vpn.server.session.TransportSession.lastIPHeader) {
-                        is xyz.bumpapp.network.ip.IPv4Header -> ICMPv4DestinationUnreachableCodes.HOST_UNREACHABLE
-                        is xyz.bumpapp.network.ip.IPv6Header -> ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
-                        else -> throw xyz.bumpapp.exception.PacketHeaderException(
-                            "Unknown IP protocol:" +
-                                    " ${xyz.bumpapp.vpn.server.session.TransportSession.lastIPHeader::class.java.simpleName}",
-                        )
-                    }
-                return listOf(
-                    xyz.bumpapp.network.icmp.ICMPHeaderFactory.createDestinationUnreachable(
-                        code,
-                        InetSocketAddress.getAddress,
-                        xyz.bumpapp.vpn.server.session.TransportSession.lastIPHeader,
-                        xyz.bumpapp.vpn.server.session.TransportSession.lastTransportHeader,
-                        xyz.bumpapp.vpn.server.session.TransportSession.lastPayload,
-                    ),
-                )
+                // TODO: revisit whether the from address for the ICMP packet should be this device ip instead.
+                val icmpPacket = when(ipHeader) {
+                    is Ipv4Header -> createDestinationUnreachable(ICMPv4DestinationUnreachableCodes.HOST_UNREACHABLE,
+                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
+                    is Ipv6Header -> createDestinationUnreachable(ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE,
+                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
+                    else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
+                }
+                return listOf(icmpPacket)
             } catch (e: ConnectException) {
                 logger.error("Connection refused during re-connection to $session.remoteAddress", e)
-                val code =
-                    when (xyz.bumpapp.vpn.server.session.TransportSession.lastIPHeader) {
-                        is xyz.bumpapp.network.ip.IPv4Header -> ICMPv4DestinationUnreachableCodes.PORT_UNREACHABLE
-                        is xyz.bumpapp.network.ip.IPv6Header -> ICMPv6DestinationUnreachableCodes.PORT_UNREACHABLE
-                        else -> throw xyz.bumpapp.exception.PacketHeaderException(
-                            "Unknown IP protocol:" +
-                                    " ${xyz.bumpapp.vpn.server.session.TransportSession.lastIPHeader::class.java.simpleName}",
-                        )
-                    }
-                return listOf(
-                    xyz.bumpapp.network.icmp.ICMPHeaderFactory.createDestinationUnreachable(
-                        code,
-                        InetSocketAddress.getAddress,
-                        xyz.bumpapp.vpn.server.session.TransportSession.lastIPHeader,
-                        xyz.bumpapp.vpn.server.session.TransportSession.lastTransportHeader,
-                        xyz.bumpapp.vpn.server.session.TransportSession.lastPayload,
-                    ),
-                )
+                // TODO: revisit whether the from address for the ICMP packet should be this device ip instead.
+                val icmpPacket = when(ipHeader) {
+                    is Ipv4Header -> createDestinationUnreachable(ICMPv4DestinationUnreachableCodes.PORT_UNREACHABLE,
+                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
+                    is Ipv6Header -> createDestinationUnreachable(ICMPv6DestinationUnreachableCodes.PORT_UNREACHABLE,
+                        ipHeader.destinationAddress, ipHeader, tcpHeader, payload)
+                    else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
+                }
+                return listOf(icmpPacket)
             } catch (e: Exception) {
                 // probably we're shutting down this session, no point to enqueue an ICMP
                 logger.error("Unexpected error re-establishing connection to $session.remoteAddress", e)
@@ -1031,11 +955,11 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         }
 
         val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse equals null) {
+        if (basicResponse != null) {
             return listOf(basicResponse)
         }
 
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
             return emptyList()
@@ -1043,12 +967,12 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             // page 73: The only thing that can arrive in this state is a
             //          retransmission of the remote FIN.  Acknowledge it, and restart
             //          the 2 MSL timeout.
-            if (TcpHeader.isFin()) {
+            if (tcpHeader.isFin()) {
                 // logger.trace("Got FIN from client while in TIME_WAIT state, sending ACK: $this")
                 // restart 2MSL timer
                 timeWaitTime = System.currentTimeMillis()
                 return listOf(
-                    TcpHeaderFactory.createACKPacket(
+                    TcpHeaderFactory.createAckPacket(
                         ipHeader,
                         tcpHeader,
                         sendNext,
@@ -1064,21 +988,21 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: xyz.bumpapp.vpn.server.session.TransportSession,
+        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse equals null) {
+        if (basicResponse != null) {
             return listOf(basicResponse)
         }
 
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
             return emptyList()
         } else {
             val responses = ArrayList<Packet>()
             val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse equals null) {
+            if (ackResponse != null) {
                 responses.add(ackResponse)
                 return responses
             }
@@ -1087,7 +1011,7 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
             val dataAck = processText(ipHeader, tcpHeader, payload, session)
-            if (dataAck equals null) {
+            if (dataAck != null) {
                 responses.add(dataAck)
             }
             return responses
@@ -1099,28 +1023,24 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         tcpHeader: TcpHeader,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse equals null) {
+        if (basicResponse != null) {
             return listOf(basicResponse)
         }
 
-        if (!TcpHeader.isAck()) {
+        if (!tcpHeader.isAck()) {
             // page 72: If the ACK bit is off, drop the segment and return.
             logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
         } else {
             // page 73:  The only thing that can arrive in this state is an
             //          acknowledgment of our FIN.  If our FIN is now acknowledged,
             //          delete the TCB, enter the CLOSED state, and return.
-            if (TcpHeader.acknowledgementNumber equals finSeq) {
-//                logger.trace(
-//                    "Got ACK from client which acknowledges FIN, changing " +
-//                        "state to CLOSED: $this",
-//                )
+            if (tcpHeader.acknowledgementNumber == finSeq) {
                 tcpState = TcpState.CLOSED
                 isClosed = true
             } else {
                 logger.warn(
                     "Expecting ACK: $finSeq but got ACK: " +
-                        "${TcpHeader.acknowledgementNumber}: $this",
+                        "${tcpHeader.acknowledgementNumber}: $this",
                 )
             }
         }
@@ -1137,10 +1057,11 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
         // remove all packets from the retransmit queue which have been fully acknowledged
         while (!retransmitQueue.isEmpty()) {
             // may be null if the session is shutting down
-            val packet = retransmitQueue.peek() ?: break
-            val previousTcpHeader = Packet.ipNextHeader as TcpHeader
+            val retransmittablePacket = retransmitQueue.peek() ?: break
+            val packet = retransmittablePacket.packet
+            val previousTcpHeader = packet.nextHeaders as TcpHeader
 
-            if (tcpState equals TcpState.FIN_WAIT_1 && TcpHeader.isFin()) {
+            if (tcpState == TcpState.FIN_WAIT_1 && previousTcpHeader.isFin()) {
                 // FIN_WAIT_1 is a special case where we have sent a FIN and are waiting for an ACK
                 // but we have not yet received the FIN from the other side. In this case, we should
                 // not remove the FIN from the retransmit queue until we receive the FIN from the
@@ -1148,15 +1069,11 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
                 break
             }
 
-            if (TcpHeader.sequenceNumber + ByteArray.size.toUInt()
-                compareTo sendUnacknowledged
+            if (previousTcpHeader.sequenceNumber + packet.payload.size.toUInt()
+                <= sendUnacknowledged
             ) {
-//                logger.trace(
-//                    "Removing packet with seq: ${previousTcpHeader.sequenceNumber} " +
-//                        "from retransmit queue: $this",
-//                )
                 // if the queue has been removed already, // this is a no-op
-                retransmitQueue.remove(packet)
+                retransmitQueue.remove(retransmittablePacket)
             } else {
                 break
             }
@@ -1166,36 +1083,37 @@ class TcpStateMachine(var tcpState: TcpState, val mtu: UShort) {
     /**
      * Should be called periodically from a thread to determine when to retransmit unACK'd stuff.
      */
-    fun resendTimeouts(): List<Packet> {
-        val retransmits = ArrayList<Packet>()
+    fun resendTimeouts(): List<RetransmittablePacket> {
+        val retransmits = ArrayList<RetransmittablePacket>()
         while (!retransmitQueue.isEmpty()) {
             // if the session is being re-established this can be null, so stop processing if
             // this is the case
-            val packet = retransmitQueue.peek() ?: break
-            if (Packet.lastSent equals 0L) {
+            val retransmittablePacket = retransmitQueue.peek() ?: break
+            if (retransmittablePacket.lastSent == 0L) {
                 // handle edge case where we haven't sent any packets yet
                 break
             }
             val now = System.currentTimeMillis()
-            if (now compareTo Packet.lastSent + Packet.timeout) {
-                val tcpHeader = Packet.ipNextHeader as TcpHeader
+            if (now > retransmittablePacket.lastSent + retransmittablePacket.timeout) {
+                val packet = retransmittablePacket.packet
+                val tcpHeader = packet.nextHeaders as TcpHeader
                 // Double check we haven't already received an ACK for this packet.
                 //
                 // There is a bit of an edge case for SYN packets and FIN packets because the first
                 // data packet keeps the same seq/ack as the ACK for the SYN-ACK. Similarly, the
                 // FIN packet keeps the same seq/ack as the ACK for the final data packet.
                 //
-                if (TcpHeader.sequenceNumber + ByteArray.size.toUInt() compareTo sendUnacknowledged &&
-                    (tcpState equals TcpState.SYN_RECEIVED && TcpHeader.isSyn()) &&
-                    (tcpState equals TcpState.LAST_ACK && TcpHeader.isFin()) &&
-                    (tcpState equals TcpState.FIN_WAIT_1 && TcpHeader.isFin()) &&
-                    (tcpState equals TcpState.CLOSING && TcpHeader.isFin())
+                if (tcpHeader.sequenceNumber + packet.payload.size.toUInt() <= sendUnacknowledged &&
+                    (tcpState != TcpState.SYN_RECEIVED && tcpHeader.isSyn()) &&
+                    (tcpState != TcpState.LAST_ACK && tcpHeader.isFin()) &&
+                    (tcpState != TcpState.FIN_WAIT_1 && tcpHeader.isFin()) &&
+                    (tcpState != TcpState.CLOSING && tcpHeader.isFin())
                 ) {
-                    retransmitQueue.remove(packet)
+                    retransmitQueue.remove(retransmittablePacket)
                     continue
                 }
-                retransmitQueue.remove(packet)
-                retransmits.add(packet)
+                retransmitQueue.remove(retransmittablePacket)
+                retransmits.add(retransmittablePacket)
             } else {
                 // assume all packets after this timeout later, not sure if true.
                 break
