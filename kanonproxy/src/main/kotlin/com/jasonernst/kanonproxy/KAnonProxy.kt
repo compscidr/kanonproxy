@@ -22,6 +22,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.net.Inet4Address
+import java.net.Inet6Address
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
@@ -164,8 +166,8 @@ class KAnonProxy(
             val ipResponse =
                 if (icmpPacket is ICMPv4EchoPacket) {
                     Ipv4Header(
-                        sourceAddress = ipHeader.destinationAddress,
-                        destinationAddress = ipHeader.sourceAddress,
+                        sourceAddress = ipHeader.destinationAddress as Inet4Address,
+                        destinationAddress = ipHeader.sourceAddress as Inet4Address,
                         protocol = ipHeader.protocol,
                         totalLength =
                             (
@@ -175,8 +177,8 @@ class KAnonProxy(
                     )
                 } else {
                     Ipv6Header(
-                        sourceAddress = ipHeader.destinationAddress,
-                        destinationAddress = ipHeader.sourceAddress,
+                        sourceAddress = ipHeader.destinationAddress as Inet6Address,
+                        destinationAddress = ipHeader.sourceAddress as Inet6Address,
                         protocol = ipHeader.protocol,
                         payloadLength =
                             (
