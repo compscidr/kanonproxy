@@ -2,3 +2,5 @@
 .idea
 local.properties
 build
+.project
+.settings/*
