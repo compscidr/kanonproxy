@@ -4,6 +4,6 @@ import com.jasonernst.knet.Packet
 
 data class RetransmittablePacket(
     val packet: Packet,
-    val lastSent: Long,
-    val timeout: Long,
+    val lastSent: Long = 0,
+    val timeout: Long = 0,
 )

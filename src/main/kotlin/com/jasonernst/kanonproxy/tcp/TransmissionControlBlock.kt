@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.knet.transport.tcp.TcpHeader.Companion.DEFAULT_WINDOW_SIZE
+import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
 
 /**
  * Represents the Transmission Control Block (TCB) of a TCP connection. See https://www.rfc-editor.org/rfc/rfc9293.txt
@@ -10,14 +11,14 @@ data class TransmissionControlBlock(
     // send sequence variables (maybe break into separate class)
     var snd_una: UInt = 0u, // oldest unacknowledged sequence number
     var snd_nxt: UInt = 0u, // next sequence number to be sent
-    var snd_wnd: UInt = 0u, // this is set to the remote side's advertised window
+    var snd_wnd: UShort = 0u, // this is set to the remote side's advertised window
     var snd_up: UShort = 0u,
     var snd_wl1: UInt = 0u,
     var snd_wl2: UInt = 0u,
     var iss: UInt = 0u,
     // recv sequence variables (maybe break into separate class)
     var rcv_nxt: UInt = 0u, // next sequence number expected on an incoming segment, and is the left or lower edge of the receive window
-    var rcv_wnd: UInt = DEFAULT_WINDOW_SIZE.toUInt(), // this is our receive window which we advertise out to the remote side
+    var rcv_wnd: UShort = DEFAULT_WINDOW_SIZE, // this is our receive window which we advertise out to the remote side
     var rcv_up: UShort = 0u,
     var irs: UInt = 0u,
     // extra notes:
@@ -60,9 +61,11 @@ data class TransmissionControlBlock(
     var ssthresh: Int = DEFAULT_WINDOW_SIZE.toInt(),
     var cwnd: Int = 0,
     var rwnd: Int = 0, // this should be the same thing as the remote sides window that is advertised out
-    var congestionState: TCPCongestionState = TCPCongestionState.SLOW_START,
+    var congestionState: TcpCongestionState = TcpCongestionState.SLOW_START,
     // SACK
     var sack_permitted: Boolean = false,
+    // last acceptable packets timestamp
+    var last_timestamp: TcpOptionTimestamp? = null
 ) {
     /**
      * Returns the difference between snd_una and snd_next while accounting for wraparound

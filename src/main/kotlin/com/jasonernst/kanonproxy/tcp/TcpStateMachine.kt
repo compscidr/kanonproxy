@@ -1,28 +1,23 @@
 package com.jasonernst.kanonproxy.tcp
 
-import com.jasonernst.icmp_common.PacketHeaderException
-import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachableCodes
-import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
-import com.jasonernst.kanonproxy.icmp.IcmpFactory.createDestinationUnreachable
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
-import com.jasonernst.knet.network.ip.v6.Ipv6Header
+import com.jasonernst.knet.transport.tcp.InitialSequenceNumberGenerator
 import com.jasonernst.knet.transport.tcp.TcpHeader
-import com.jasonernst.knet.transport.tcp.TcpHeader.Companion.DEFAULT_WINDOW_SIZE
-import com.jasonernst.knet.transport.tcp.TcpHeaderFactory
-import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
-import org.slf4j.LoggerFactory
-import java.net.ConnectException
-import java.net.NoRouteToHostException
+import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize.Companion.mssOrDefault
+import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
 import java.nio.ByteBuffer
+import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentLinkedQueue
-import kotlin.jvm.java
 import kotlin.jvm.javaClass
-import kotlin.ranges.until
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.toUInt
-
-////// TODOOOOO TGHIS @WAS BAASD OFF OLD CODE, REDO
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Abstracts the TCP state machine out of the InternetTcpTcpSession so it can be used by both the
@@ -35,49 +30,64 @@ import kotlin.toUInt
  * should enqueue the incoming packets until the connection is made, and then process them during
  * the notifyRemoteConnected() call.
  *
- * @param tcpState - the initial state to start the machine with
+ * @param TcpState - the initial state to start the machine with
  * @param mtu - the maximum transmission unit. If any additional headers are to be added, the MTU should reflect the
  *   size of these extra headers. For instance, in a typical VPN app, there is often an additional IP and UDP header
  *   added. The MTU should thus be reduced my the maximum size of these IP and UDP headers that get prepended to the
  *   normal IP/Transport/Payload.
  */
 class TcpStateMachine(
-    var tcpState: TcpState,
+    var tcpState: TcpState = TcpState.CLOSED,
     val mtu: UShort,
-    val session: TcpSession
+    val session: TcpSession,
+    val receiveBufferSize: UShort = DEFAULT_BUFFER_SIZE.toUShort(),
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    // sequence and ack numbers for the TCP session
-    // see: https://datatracker.ietf.org/doc/html/rfc793#section-3.7
-    // also see: https://datatracker.ietf.org/doc/html/rfc793#section-3.2
-    private var initialSendSequence = 0u // ISS
-    var sendNext = 0u // SND.NEXT
-    var sendUnacknowledged = 0u // SND.UNA
-    var recvNext = 0u // RCV.NEXT
-    private var initialRecvSequence = 0u // IRS
-    private var sendUrgentPointer = 0u // SND.UP
+    val tcbMutex = Mutex()
+    var transmissionControlBlock: TransmissionControlBlock? = null
 
-    // set to true when a PSH was received so we can register interest in channel writes
-    // and wakeup the selector
-    var pshReceived = false
+    // the MSS value which will be used in the synchronized state (set based on the handshake to
+    // be the minimum effective MSS of the two endpoints)
+    var mss: UShort = 0u
 
-    var mss: UShort = 0u // MSS, var to make tests easier
-    var sendWindow = DEFAULT_WINDOW_SIZE // SND.WND, var to make tests easier
-    var sendWindowUpdateSequence = 0u // SND.WL1, var to make tests easier
-    var sendWindowUpdateAck = 0u // SND.WL2, var to make tests easier
-    var recvWindow = DEFAULT_WINDOW_SIZE // RCV.WND, var to make tests easier
-    private var recvUrgentPointer = 0u // RCV.UP
+    // the minimum MTU between this side and the remote side, used to derive the MSS. Don't really
+    // need this as a variable, other than to just make debugging easier
+    var minMtu: UShort = 0u
 
-    private val srtt = 0u // SRTT smoothed round trip time
-
-    var retransmitQueue = ConcurrentLinkedQueue<RetransmittablePacket>() // var to make tests easier
-
-    // set when we send out FIN so we know whether we've received an ACK for it or not.
-    var timeWaitTime = 0L
-    var finSeq = 0u
-    private var finHasBeenAcked = false
+    // TODO: instead of using a queue of packets, we should keep a buffer of transmitted data and then
+    //   compact it as ACKs are received.
+    var retransmitQueue = ConcurrentLinkedQueue<Packet>() // var to make tests easier
     var isClosed = false
+
+    companion object {
+        const val ALPHA = 1.0 / 8 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
+        const val BETA = 1.0 / 4 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
+        val G = 0.5 // clock granularity in seconds
+        val K = 4.0 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
+        val MSL = 2.0 * 60.0 // maximum segment lifetime in seconds
+    }
+
+    fun passiveOpen() {
+        runBlocking {
+            tcpState = TcpState.LISTEN
+            tcbMutex.withLock {
+                transmissionControlBlock = TransmissionControlBlock(rcv_wnd = receiveBufferSize)
+                transmissionControlBlock!!.passive_open = true
+            }
+        }
+    }
+
+    fun activeOpen() {
+        runBlocking {
+            tcpState = TcpState.SYN_SENT
+            tcbMutex.withLock {
+                transmissionControlBlock = TransmissionControlBlock(rcv_wnd = receiveBufferSize)
+                transmissionControlBlock!!.passive_open = false
+                transmissionControlBlock!!.send_ts_ok = true // so that when we send syn we add the timestamp
+            }
+        }
+    }
 
     /**
      * Given the current state of the session, this method will use the incoming packet headers
@@ -90,58 +100,103 @@ class TcpStateMachine(
      * It will leave the payload stream at:
      *   position + ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
      *
+     * Need to think a bit on this note: In general, the processing of received segments MUST be
+     *             implemented to aggregate ACK segments whenever possible
+     *             (MUST-58).  For example, if the TCP endpoint is processing a
+     *             series of queued segments, it MUST process them all before
+     *             sending any ACK segments (MUST-59).
+     *
+     * Will need to make some updates so that either a) we can enqueue all non-ctrl packets in a
+     * session and then send the ACK for the last one, or b) return all of the ACKs but then
+     * aggregate them into a single packet before sending them back to the client.
+     *
      */
     fun processHeaders(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
     ): List<Packet> {
-        logger.trace("Handling STATE: {} for session: {}", tcpState, session)
+        if (payload.isNotEmpty()) {
+            logger.trace("Handling state: {} {} Payload:{} bytes", tcpState, tcpHeader, payload.size)
+        } else {
+            logger.trace("Handling state: {} {}", tcpState, tcpHeader)
+        }
+
+        // dummy check on the payload length matching otherwise, we get messed up calculations
+        // with the window sizes. This can happen if we use an IpHeader that hasn't had its payload
+        // size set, for example.
+        // logger.debug("Payload length: ${payload.size}, IP Payload length: ${ipHeader.getPayloadLength()}, TCP Header length: ${tcpHeader.getHeaderLength()}")
+        val computedPayloadLength = (ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()).toUShort()
+        if (computedPayloadLength != payload.size.toUShort()) {
+            throw IllegalArgumentException("Computed payload length: $computedPayloadLength does not match payload length: ${payload.size}")
+        }
+
         when (tcpState) {
             TcpState.CLOSED -> {
                 return handleClosedState(ipHeader, tcpHeader)
             }
+
             TcpState.LISTEN -> {
                 return handleListenState(ipHeader, tcpHeader)
             }
+
             TcpState.SYN_SENT -> {
-                logger.error("Received packet in SYN_SENT state, but we don't support that state yet, enqueuing RST: $this")
-                return listOf(
-                    TcpHeaderFactory.createRstPacket(
-                        ipHeader,
-                        tcpHeader,
-                    ),
-                )
+                return handleSynSentState(ipHeader, tcpHeader)
             }
+
             TcpState.SYN_RECEIVED -> {
-                return handleSynReceivedState(ipHeader, tcpHeader)
+                return handleSynReceivedState(ipHeader, tcpHeader, payload)
             }
+
             TcpState.ESTABLISHED -> {
                 return handleEstablishedState(ipHeader, tcpHeader, payload)
             }
+
             TcpState.FIN_WAIT_1 -> {
                 return handleFinWait1State(ipHeader, tcpHeader, payload)
             }
+
             TcpState.FIN_WAIT_2 -> {
                 return handleFinWait2State(ipHeader, tcpHeader, payload)
             }
+
             TcpState.CLOSING -> {
                 return handleClosingState(ipHeader, tcpHeader, payload)
             }
+
             TcpState.CLOSE_WAIT -> {
                 return handleCloseWaitState(ipHeader, tcpHeader, payload)
             }
+
             TcpState.TIME_WAIT -> {
                 return handleTimeWaitState(ipHeader, tcpHeader, payload)
             }
+
             TcpState.LAST_ACK -> {
-                return handleLastAckState(ipHeader, tcpHeader)
+                return handleLastAckState(ipHeader, tcpHeader, payload)
             }
         }
     }
 
     /**
-     * We probably shouldn't receive any packets in this state, but its included for completeness.
+     *  If the state is CLOSED (i.e., TCB does not exist), then
+     *
+     *       all data in the incoming segment is discarded.  An incoming
+     *       segment containing a RST is discarded.  An incoming segment not
+     *       containing a RST causes a RST to be sent in response.  The
+     *       acknowledgment and sequence field values are selected to make the
+     *       reset sequence acceptable to the TCP endpoint that sent the
+     *       offending segment.
+     *
+     *       If the ACK bit is off, sequence number zero is used,
+     *
+     *          <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+     *
+     *       If the ACK bit is on,
+     *
+     *          <SEQ=SEG.ACK><CTL=RST>
+     *
+     *       Return.
      */
     private fun handleClosedState(
         ipHeader: IpHeader,
@@ -158,20 +213,94 @@ class TcpStateMachine(
             logger.error("Got RST in CLOSED state, ignoring: $this")
             return emptyList()
         }
-
         logger.error("Received packet in CLOSED state. Enqueuing RST: $this")
-        return listOf(
-            TcpHeaderFactory.createRstPacket(
-                ipHeader,
-                tcpHeader,
-            ),
-        )
+
+        // unclear if there should be a check for FIN first. There is a section that describes what
+        // do if ack or not, but then later:
+        // Eighth, check the FIN bit:
+        //
+        //      -  Do not process the FIN if the state is CLOSED, LISTEN, or SYN-
+        //         SENT since the SEG.SEQ cannot be validated; drop the segment
+        //         and return.
+        val response =
+            if (!tcpHeader.isAck()) {
+                val segmentLength = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                TcpHeaderFactory.prepareResponseHeaders(
+                    ipHeader,
+                    tcpHeader,
+                    0u,
+                    tcpHeader.sequenceNumber + segmentLength,
+                    swapSourceAndDestination = true,
+                    isAck = true,
+                    isRst = true,
+                    transmissionControlBlock = null,
+                )
+            } else {
+                TcpHeaderFactory.prepareResponseHeaders(
+                    ipHeader,
+                    tcpHeader,
+                    tcpHeader.acknowledgementNumber,
+                    0u,
+                    swapSourceAndDestination = true,
+                    isRst = true,
+                    transmissionControlBlock = null,
+                )
+            }
+
+        return listOf(response)
     }
 
     /**
-     * The goal here is to receive a SYN packet from the client, and send a SYN-ACK back to them.
+     * If the state is LISTEN, then
+     *
+     *       First, check for a RST:
+     *
+     *       -  An incoming RST segment could not be valid since it could not
+     *          have been sent in response to anything sent by this incarnation
+     *          of the connection.  An incoming RST should be ignored.  Return.
+     *
+     *       Second, check for an ACK:
+     *
+     *       -  Any acknowledgment is bad if it arrives on a connection still
+     *          in the LISTEN state.  An acceptable reset segment should be
+     *          formed for any arriving ACK-bearing segment.  The RST should be
+     *          formatted as follows:
+     *
+     *             <SEQ=SEG.ACK><CTL=RST>
+     *
+     *       -  Return.
+     *
+     *       Third, check for a SYN:
+     *
+     *       -  If the SYN bit is set, check the security.  If the security/
+     *          compartment on the incoming segment does not exactly match the
+     *          security/compartment in the TCB, then send a reset and return.
+     *
+     *             <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+     *
+     *       -  Set RCV.NXT to SEG.SEQ+1, IRS is set to SEG.SEQ, and any other
+     *          control or text should be queued for processing later.  ISS
+     *          should be selected and a SYN segment sent of the form:
+     *
+     *             <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
+     *
+     *       -  SND.NXT is set to ISS+1 and SND.UNA to ISS.  The connection
+     *          state should be changed to SYN-RECEIVED.  Note that any other
+     *          incoming control or data (combined with SYN) will be processed
+     *          in the SYN-RECEIVED state, but processing of SYN and ACK should
+     *          not be repeated.  If the listen was not fully specified (i.e.,
+     *          the remote socket was not fully specified), then the
+     *          unspecified fields should be filled in now.
+     *
+     *       Fourth, other data or control:
+     *
+     *       -  This should not be reached.  Drop the segment and return.  Any
+     *          other control or data-bearing segment (not containing SYN) must
+     *          have an ACK and thus would have been discarded by the ACK
+     *          processing in the second step, unless it was first discarded by
+     *          RST checking in the first step.
      */
-    fun handleListenState(
+    private fun handleListenState(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
     ): List<Packet> {
@@ -191,93 +320,276 @@ class TcpStateMachine(
         //        the LISTEN state.  An acceptable reset segment should be formed
         //        for any arriving ACK-bearing segment
         if (tcpHeader.isAck()) {
-            logger.error("Received ACK in LISTEN state. Enqueuing RST moving to CLOSED state: $this")
-            tcpState = TcpState.CLOSED
-            isClosed = true
-            val dummyBuffer = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
-            dummyBuffer.put(ipHeader.toByteArray())
-            dummyBuffer.put(tcpHeader.toByteArray())
-            dummyBuffer.flip()
-            // logger.trace("PACKET: ${BufferUtil.toHexString(dummyBuffer, 0, dummyBuffer.limit())}")
+            logger.error("Received ACK in LISTEN state. Enqueuing RST: $tcpHeader")
+//                tcpState = TcpState.TIME_WAIT
+//            val dummyBuffer = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
+//            dummyBuffer.put(ipHeader.toByteArray())
+//            dummyBuffer.put(tcpHeader.toByteArray())
+//            dummyBuffer.flip()
+//            logger.trace("PACKET: ${BufferUtil.toHexString(dummyBuffer, 0, dummyBuffer.limit())}")
             return listOf(
-                TcpHeaderFactory.createRstPacket(
+                TcpHeaderFactory.prepareResponseHeaders(
                     ipHeader,
                     tcpHeader,
+                    tcpHeader.acknowledgementNumber,
+                    0u,
+                    swapSourceAndDestination = true,
+                    isRst = true,
+                    transmissionControlBlock = null,
                 ),
             )
         }
         return if (tcpHeader.isSyn()) {
+            logger.trace("Got SYN from client while in LISTEN state")
+            // todo: we probably want to be able to set a reduction factor here if this is running as a VPN or something
+            //   where there are extra headers. Probably this should be set via constructor.
+            val potentialMSS = mssOrDefault(tcpHeader, ipv4 = ipHeader is Ipv4Header)
+            mss = min(potentialMSS.toUInt(), mtu.toUInt()).toUShort()
+            transmissionControlBlock!!.iw = 2 * mss.toInt()
+            transmissionControlBlock!!.cwnd = transmissionControlBlock!!.iw
+            logger.debug("Setting MSS to: $mss")
+
+            // todo: needt to implement that option
+//            if (tcpHeader.getOptions().contains(TcpOptionSACKPermitted)) {
+//                transmissionControlBlock!!.sack_permitted = true
+//            }
+
+            // todo: 3.10.7.2: if the SYN bit is set, check the security.  If the security/
+            //         compartment on the incoming segment does not exactly match the
+            //         security/compartment in the TCB, then send a reset and return.
             retransmitQueue.clear() // just to be sure we start in a fresh state
 
-            var foundMSS = false
-            for (option in tcpHeader.getOptions()) {
-                if (option is TcpOptionMaximumSegmentSize) {
-                    foundMSS = true
-                    // assuming the client MSS is already taking into account the reduction of the
-                    // MTU - BUMP, IP, UDP headers via the MTU call on the construction of the VPN
-                    // android client. TODO: make sure the same is true with the standalone stuff
-                    logger.debug("MSS proposed by client: ${option.mss}")
-
-                    val serverMSS = mtu
-                    logger.debug("MSS proposed by server: $serverMSS")
-
-                    mss =
-                        if (serverMSS < option.mss) {
-                            serverMSS
-                        } else {
-                            option.mss
-                        }
-                    logger.debug("Using MSS: $mss")
+            return runBlocking {
+                tcbMutex.withLock {
+                    transmissionControlBlock!!.rcv_nxt = tcpHeader.sequenceNumber + 1u
+                    transmissionControlBlock!!.irs = tcpHeader.sequenceNumber
+                    transmissionControlBlock!!.iss =
+                        InitialSequenceNumberGenerator.generateInitialSequenceNumber(
+                            ipHeader.sourceAddress.hostAddress,
+                            tcpHeader.sourcePort.toInt(),
+                            ipHeader.destinationAddress.hostAddress,
+                            tcpHeader.destinationPort.toInt(),
+                        )
+                    val maybeTimestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                    transmissionControlBlock!!.send_ts_ok = maybeTimestamp != null
+                    val response =
+                        TcpHeaderFactory.createSynAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            mss,
+                            transmissionControlBlock!!,
+                        )
+                    val responseTcpHeader = response.nextHeaders as TcpHeader
+                    logger.debug(
+                        "Enqueuing SYN-ACK to client with Seq:" +
+                                " ${responseTcpHeader.sequenceNumber.toLong()}, " +
+                                "ACK: ${responseTcpHeader.acknowledgementNumber.toLong()} " +
+                                "${response.ipHeader} $responseTcpHeader",
+                    )
+                    transmissionControlBlock!!.snd_nxt = transmissionControlBlock!!.iss + 1u
+                    transmissionControlBlock!!.snd_una = transmissionControlBlock!!.iss
+                    transmissionControlBlock!!.rto_expiry =
+                        System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000).toLong()
+                    logger.debug("Transition to SYN_RECEIVED state")
+                    tcpState = TcpState.SYN_RECEIVED
+                    transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                    if (transmissionControlBlock!!.rto_expiry == 0L) {
+                        transmissionControlBlock!!.rto_expiry =
+                            System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000L).toLong()
+                    }
+                    return@runBlocking listOf(response)
                 }
             }
-            if (!foundMSS) {
-                logger.error("Didn't find an MSS option in the SYN packet, enqueuing RST: $this")
-                return listOf(
-                    TcpHeaderFactory.createRstPacket(
-                        ipHeader,
-                        tcpHeader,
-                    ),
-                )
-            }
-            logger.trace("Got SYN from client while in LISTEN state")
-
-            val response =
-                TcpHeaderFactory.createSynAckPacket(
-                    ipHeader,
-                    tcpHeader,
-                    mss,
-                )
-            val responseTCPHeader = response.nextHeaders as TcpHeader
-            logger.trace(
-                "Enqueuing SYN-ACK to client with Seq:" +
-                    " ${responseTCPHeader.sequenceNumber.toLong()}, " +
-                    "ACK: ${responseTCPHeader.acknowledgementNumber.toLong()} " +
-                    "${response.ipHeader} $responseTCPHeader: $this",
-            )
-            initialRecvSequence = responseTCPHeader.sequenceNumber
-            initialSendSequence = responseTCPHeader.sequenceNumber
-            sendNext = initialSendSequence + 1u
-            recvNext = responseTCPHeader.sequenceNumber + 1u
-            sendUnacknowledged = initialSendSequence
-            tcpState = TcpState.SYN_RECEIVED
-            listOf(response)
         } else {
-            // from page 65: Any other control or text-bearing segment (not containing SYN)
-            //        must have an ACK and thus would be discarded by the ACK
-            //        processing.  An incoming RST segment could not be valid, since
-            //        it could not have been sent in response to anything sent by this
-            //        incarnation of the connection.  So you are unlikely to get here,
-            //        but if you do, drop the segment, and return.
-            logger.error(
-                "Got unexpected TCP flag: $tcpHeader when in LISTEN state, " +
-                    "Enqueuing RST: $this",
-            )
-            return listOf(
-                TcpHeaderFactory.createRstPacket(
-                    ipHeader,
-                    tcpHeader,
-                ),
-            )
+            logger.error("Got unexpected TCP flag: $tcpHeader when in LISTEN state, dropping segment and enqueuing nothing")
+            emptyList()
+        }
+    }
+
+    /**
+     * In all states except SYN-SENT, all reset (RST) segments are validated
+     *    by checking their SEQ fields.  A reset is valid if its sequence
+     *    number is in the window.  In the SYN-SENT state (a RST received in
+     *    response to an initial SYN), the RST is acceptable if the ACK field
+     *    acknowledges the SYN.
+     *
+     *    The receiver of a RST first validates it, then changes state.  If the
+     *    receiver was in the LISTEN state, it ignores it.  If the receiver was
+     *    in SYN-RECEIVED state and had previously been in the LISTEN state,
+     *    then the receiver returns to the LISTEN state; otherwise, the
+     *    receiver aborts the connection and goes to the CLOSED state.  If the
+     *    receiver was in any other state, it aborts the connection and advises
+     *    the user and goes to the CLOSED state.
+     *
+     *    TCP implementations SHOULD allow a received RST segment to include
+     *    data (SHLD-2).  It has been suggested that a RST segment could
+     *    contain diagnostic data that explains the cause of the RST.  No
+     *    standard has yet been established for such data.
+     *
+     *    Specific to SYN-SENT:
+     *    Second, check the RST bit:
+     *
+     *       -  If the RST bit is set,
+     *
+     *          o  A potential blind reset attack is described in RFC 5961 [9].
+     *             The mitigation described in that document has specific
+     *             applicability explained therein, and is not a substitute for
+     *             cryptographic protection (e.g., IPsec or TCP-AO).  A TCP
+     *             implementation that supports the mitigation described in RFC
+     *             5961 SHOULD first check that the sequence number exactly
+     *             matches RCV.NXT prior to executing the action in the next
+     *             paragraph.
+     *
+     *          o  If the ACK was acceptable, then signal to the user "error:
+     *             connection reset", drop the segment, enter CLOSED state,
+     *             delete TCB, and return.  Otherwise (no ACK), drop the
+     *             segment and return.
+     */
+    private fun handleSynSentState(
+        ipHeader: IpHeader,
+        tcpHeader: TcpHeader,
+    ): List<Packet> {
+        return runBlocking {
+            tcbMutex.withLock {
+                if (tcpHeader.isAck()) {
+                    // 3.10.7.3
+                    // If SEG.ACK =< ISS or SEG.ACK > SND.NXT, send a reset (unless
+                    //            the RST bit is set, if so drop the segment and return)
+                    //
+                    //               <SEQ=SEG.ACK><CTL=RST>
+                    //
+                    //         o  and discard the segment.  Return.
+                    if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.iss ||
+                        tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt
+                    ) {
+                        logger.warn(
+                            "Received unacceptable ACK outside of ISS and SND_NEXT in SYN_SENT " +
+                                    "state, sending RST, discarding segment and returning. ACK: " +
+                                    "${tcpHeader.acknowledgementNumber}, " +
+                                    "ISS: ${transmissionControlBlock!!.iss}, " +
+                                    "SND.NXT: ${transmissionControlBlock!!.snd_nxt}",
+                        )
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createRstPacket(
+                                ipHeader,
+                                tcpHeader,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+                    // 3.10.7.3 If SND.UNA < SEG.ACK =< SND.NXT, then the ACK is acceptable.
+                    // it doesn't say explicitly what to do if the ACK is not acceptable in this
+                    // context, so I'm assuming an RST is sent.
+                    // also, I'm not sure the point of checking snd_next again because it should
+                    // be caught in the above check, but leaving it just to match the RFC
+                    if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una ||
+                        tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt
+                    ) {
+                        logger.warn(
+                            "ACK outside of SND.UNA < SEG.ACK =< SND.NXT in SYN_SENT state, " +
+                                    "sending RST, discarding segment and returning. " +
+                                    "ACK: ${tcpHeader.acknowledgementNumber}, " +
+                                    "SND.UNA: ${transmissionControlBlock!!.snd_una}, " +
+                                    "SND.NXT: ${transmissionControlBlock!!.snd_nxt}",
+                        )
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createRstPacket(
+                                ipHeader,
+                                tcpHeader,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+                }
+                // second check the RST bit
+                if (tcpHeader.isRst()) {
+                    if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                        logger.debug("Received RST in SYN_SENT state, transitioning to CLOSED: $tcpHeader")
+                        // RFC9293: If the RST bit is set, the connection should be aborted and the TCB should be deleted
+                        tcpState = TcpState.CLOSED
+                        isClosed = true
+                        transmissionControlBlock = null
+                        retransmitQueue.clear()
+                        return@runBlocking emptyList<Packet>()
+                    } else {
+                        // drop the segment and return
+                        logger.warn(
+                            "Received RST in SYN_SENT state, but sequence number doesn't match, dropping segment and returning: $tcpHeader",
+                        )
+                        return@runBlocking emptyList<Packet>()
+                    }
+                }
+                // todo: Third, check the security:
+
+                // Fourth, check the SYN bit
+                if (tcpHeader.isSyn()) {
+                    transmissionControlBlock!!.rcv_nxt = tcpHeader.sequenceNumber + 1u
+                    transmissionControlBlock!!.irs = tcpHeader.sequenceNumber
+                    if (tcpHeader.isAck()) {
+                        transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                        removeAckedPacketsFromRetransmit()
+                    }
+                    if (transmissionControlBlock!!.snd_una > transmissionControlBlock!!.iss) {
+                        logger.debug("Received SYN-ACK in SYN_SENT state, transitioning to ESTABLISHED: $tcpHeader")
+                        // RFC9293: If the ACK acknowledges our SYN, enter ESTABLISHED state, form an ACK segment and send it back
+                        tcpState = TcpState.ESTABLISHED
+
+                        // make sure we set the mss or use the default or we won't be able to
+                        // properly enqueue packets
+                        mss = mssOrDefault(tcpHeader, ipv4 = ipHeader is Ipv4Header)
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+
+                        // todo: Data or controls that were queued for
+                        //         transmission MAY be included.  Some TCP implementations
+                        //         suppress sending this segment when the received segment
+                        //         contains data that will anyways generate an acknowledgment in
+                        //         the later processing steps, saving this extra acknowledgment of
+                        //         the SYN from being sent.  If there are other controls or text
+                        //         in the segment, then continue processing at the sixth step
+                        //         under Section 3.10.7.4 where the URG bit is checked; otherwise,
+                        //         return.
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    } else {
+                        logger.debug("Received SYN in SYN_SENT state, transitioning to SYN_RECEIVED: $tcpHeader")
+                        tcpState = TcpState.SYN_RECEIVED
+                        transmissionControlBlock!!.snd_wnd = tcpHeader.windowSize
+                        transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
+                        transmissionControlBlock!!.snd_wl2 = tcpHeader.acknowledgementNumber
+
+                        // todo:   Note that it is legal to send and receive application data on
+                        //         SYN segments (this is the "text in the segment" mentioned
+                        //         above).  There has been significant misinformation and
+                        //         misunderstanding of this topic historically.  Some firewalls
+                        //         and security devices consider this suspicious.  However, the
+                        //         capability was used in T/TCP [21] and is used in TCP Fast Open
+                        //         (TFO) [48], so is important for implementations and network
+                        //         devices to permit.
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        // note, to be in the SYN-SENT state, we already have the ISS set, so we no need
+                        //   to set it again here before we respond.
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createSynAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                mss,
+                                transmissionControlBlock!!,
+                            ),
+                        )
+                    }
+                }
+
+                // Fifth, if neither of the SYN or RST bits is set, then drop the segment and return.
+                logger.warn("Got unexpected TCP flag: $tcpHeader when in SYN_SENT state, dropping segment and enqueuing nothing $this")
+                return@runBlocking emptyList<Packet>()
+            }
         }
     }
 
@@ -288,398 +600,197 @@ class TcpStateMachine(
     private fun handleSynReceivedState(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
+        payload: ByteArray,
     ): List<Packet> {
-        // page 69, lists states which should do this check first and return and ACK and drop
-        // the segment, unless the RST bit is set.
-        if (!isInWindow(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
-            return listOf(
-                TcpHeaderFactory.createAckPacket(
-                    ipHeader,
-                    tcpHeader,
-                    sendNext,
-                    recvNext,
-                ),
-            )
-        }
-        if (tcpHeader.isRst()) {
-            // Page 37:  If the receiver was
-            //  in SYN-RECEIVED state and had previously been in the LISTEN state,
-            //  then the receiver returns to the LISTEN state.
+        val packets =
+            runBlocking {
+                tcbMutex.withLock {
+                    // first check seq number
+                    if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
+                        logger.warn("Received unacceptable sequence number, sending ACK. RCV'd header: $tcpHeader")
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
 
-            // However, LISTEN state only makes sense for us when we are first setting up the
-            // connection. If this is true, the stream will have proper SYN packets coming so we
-            // can close this attempt at the session and retry when we received the next SYN packet.
-            logger.error("Got RST from client while in $tcpState state, closing connection: $this")
-            tcpState = TcpState.CLOSED
-            isClosed = true
-            return emptyList()
-        }
-        if (tcpHeader.isSyn()) {
-            // page 71: If the SYN is in the window it is an error, send a reset, any
-            //        outstanding RECEIVEs and SEND should receive "reset" responses,
-            //        all segment queues should be flushed, the user should also
-            //        receive an unsolicited general "connection reset" signal, enter
-            //        the CLOSED state, delete the TCB, and return.
-            //
-            //        If the SYN is not in the window this step would not be reached
-            //        and an ack would have been sent in the first step (sequence
-            //        number check).
-            return listOf(
-                TcpHeaderFactory.createRstPacket(
-                    ipHeader,
-                    tcpHeader,
-                ),
-            )
-        }
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-            return emptyList()
-        } else {
-            return if (tcpHeader.acknowledgementNumber in sendUnacknowledged..sendNext) {
-                // page 72: If the ACK acknowledges our SYN-ACK then enter ESTABLISHED
-                //        state and return.
-                tcpState = TcpState.ESTABLISHED
-                removeAckedPacketsFromRetransmit()
-                // page 75: check for FIN bit, and if set, move to CLOSE-WAIT state
-                if (tcpHeader.isFin()) {
-                    recvNext++
-                    tcpState = TcpState.CLOSE_WAIT
-                }
-                emptyList()
-            } else {
-                // page 72: If the ACK is not acceptable then form a reset segment,
-                //        enter the CLOSED state, delete the TCB, and return.
-                logger.error(
-                    "Got ACK from client while in SYN_RECEIVED state, but ACK was not " +
-                        "acceptable. Enqueuing RST: $tcpHeader",
-                )
-                listOf(
-                    TcpHeaderFactory.createRstPacket(
-                        ipHeader,
-                        tcpHeader,
-                    ),
-                )
-            }
-        }
-    }
+                    // 2nd check the RST bit
+                    if (tcpHeader.isRst()) {
+                        // TODO: consider RFC 5961 - which we are not for now
+                        return@runBlocking if (transmissionControlBlock!!.passive_open) {
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            logger.debug("Got RST in SYN_RECEIVED state with passive open, transitioning to LISTEN")
+                            retransmitQueue.clear()
+                            tcpState = TcpState.LISTEN
+                            emptyList<Packet>()
+                        } else {
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            logger.debug("Got RST in SYN_RECEIVED state with active open, transitioning to CLOSED")
+                            retransmitQueue.clear()
+                            tcpState = TcpState.CLOSED
+                            isClosed = true
+                            transmissionControlBlock = null
+                            retransmitQueue.clear()
+                            emptyList<Packet>()
+                        }
+                    }
 
-    /**
-     * See page 53 of RFC 793: https://tools.ietf.org/html/rfc793#page-53
-     * "A natural way to think about processing incoming segments is to
-     *    imagine that they are first tested for proper sequence number (i.e.,
-     *    that their contents lie in the range of the expected "receive window"
-     *    in the sequence number space) and then that they are generally queued
-     *    and processed in sequence number order."
-     *
-     * Page 69, spells out 4 tests for accepting a packet
-     *
-     * According to page 82, TCP considers packets in the range RCV.NEXT to RCV.NEXT + RCV.WND - 1
-     * carrying acceptable data or control. Segments containing sequence numbers entirely outside
-     * of this range are considered duplicates and discarded.
-     */
-    fun isInWindow(
-        ipHeader: IpHeader,
-        tcpHeader: TcpHeader,
-    ): Boolean {
-        val recvWindowMax = recvNext + recvWindow.toUInt()
-        logger.trace("RECV window from $recvNext to $recvWindowMax: $tcpHeader")
-        logger.trace("$tcpHeader")
-        val segmentLength = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
-        logger.trace(
-            "TCP SEQ START: ${tcpHeader.sequenceNumber} END: " +
-                "${tcpHeader.sequenceNumber + segmentLength}",
-        )
-        if (segmentLength == 0u) {
-            return if (recvWindow == (0u).toUShort()) {
-                if (tcpHeader.sequenceNumber == recvNext) {
-                    true
-                } else {
-                    logger.warn(
-                        "SequenceNumberNotInWindow: Segment length is 0, recvWindow is 0." +
-                            " Got packet with sequence number " +
-                            "${tcpHeader.sequenceNumber} but expected $recvNext: $this",
-                    )
-                    false
-                }
-            } else {
-                if (tcpHeader.sequenceNumber in recvNext until recvWindowMax) {
-                    true
-                } else if (tcpHeader.sequenceNumber > (UInt.Companion.MAX_VALUE - recvWindow)) {
-                    /**
-                     * Rollover error was found when a tcpEchoTcpSessionTest was created for a
-                     * sequence number when
-                     *      UInt.MAX_VALUE - UShort.MAX_VALUE <= Sequence Number < UInt.MAX_VALUE
-                     * This occurred due to the recvWindowMax being between 0 and UShort.MAX_VALUE
-                     * while the sequence number
-                     * still hadn't rolled over and thus was checking improperly.
-                     * @author Patrick Houlding
-                     */
-                    logger.debug(
-                        "recvWindowMax rollover encountered. tcpHeader Sequence Number is within" +
-                            " UShort.MAX_VALUE of UInt.MAX_VALUE",
-                    )
-                    true
-                } else {
-                    logger.warn(
-                        "SequenceNumberNotInWindow: Segment length is 0, but sequence number" +
-                            " ${tcpHeader.sequenceNumber} is not in window from $recvNext to $recvWindowMax: $this",
-                    )
-                    false
-                }
-            }
-        } else {
-            return if (recvWindow == (0u).toUShort()) {
-                logger.warn(
-                    "SequenceNumberNotInWindow: recvWindow is 0, so we are not accepting" +
-                        " any data packets, just control: $this",
-                )
-                false
-            } else {
-                val segmentEnd = (tcpHeader.sequenceNumber + segmentLength) - 1U
+                    // 3rd check security (todo)
 
-                // Check left bound before rollback & within Short window
-                if (tcpHeader.sequenceNumber >= (UInt.Companion.MAX_VALUE - recvWindow)) {
-                    // recvWindowMax has rolled over and seq# hasn't
-                    if (tcpHeader.sequenceNumber in recvNext until UInt.Companion.MAX_VALUE) {
-                        // tcpHeader before rollover and inside left bound, now check segmentEnd
-                        if (segmentEnd <= recvWindowMax ||
-                            segmentEnd > (
-                                UInt.MAX_VALUE -
-                                    recvWindow
+                    // 4th
+                    if (tcpHeader.isSyn()) {
+                        logger.debug("Got SYN in SYN_RECEIVED state")
+                        if (transmissionControlBlock!!.passive_open) {
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            logger.debug("Got SYN in SYN_RECEIVED state, transitioning to LISTEN: {}", tcpHeader)
+                            tcpState = TcpState.LISTEN
+                            return@runBlocking emptyList<Packet>()
+                        } else {
+                            logger.debug("Got SYN in SYN_RECEIVED state, sending RST: {}", tcpHeader)
+                            // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
+                            //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
+                            //   state, deleting the TCP, queues flushed.
+                            //   After ACK-ing the segment, it should be dropped, and stop processing
+                            //     further, ie no data processing. (and possibly no further processing of
+                            //       any additional segments? unclear)
+                            return@runBlocking listOf(
+                                TcpHeaderFactory.createAckPacket(
+                                    ipHeader,
+                                    tcpHeader,
+                                    seqNumber = transmissionControlBlock!!.snd_nxt,
+                                    ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                    transmissionControlBlock = transmissionControlBlock,
+                                ),
                             )
+                        }
+                    }
+
+                    // 5th: check ACK field
+                    if (tcpHeader.isAck().not()) {
+                        // drop segment and return
+                        logger.warn("Received segment without ACK in SYN_RECEIVED state, dropping: $tcpHeader")
+                        return@runBlocking emptyList<Packet>()
+                    } else {
+                        // TODO: RFC5961: blind data injection attack mitigation
+                        if (transmissionControlBlock!!.snd_una < tcpHeader.acknowledgementNumber &&
+                            tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
                         ) {
-                            // segment end either before rollover or before window max (right bound)
-                            // This final line checks the C9 case (starting before rollover
-                            // but ending after, inside recvWindow)
-                            if (tcpHeader.sequenceNumber >= (UInt.MAX_VALUE - recvWindow) &&
-                                recvNext < recvWindow
-                            ) {
-                                logger.warn(
-                                    "SequenceNumberNotInWindow: Sequence number is" +
-                                        " before recv window",
+                            logger.debug("Received ACK in SYN_RECEIVED state, transitioning to ESTABLISHED")
+                            tcpState = TcpState.ESTABLISHED
+                            transmissionControlBlock!!.snd_wnd = tcpHeader.windowSize
+                            transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
+                            transmissionControlBlock!!.snd_wl2 = tcpHeader.acknowledgementNumber
+//                            session.lastTransportHeader = tcpHeader
+//                            session.lastIpHeader = ipHeader
+
+                            // not sure if this is necessary here
+                            removeAckedPacketsFromRetransmit()
+
+                            // https://www.rfc-editor.org/rfc/rfc6298.txt first RTT measurement
+                            val timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            if (timestamp != null) {
+                                // logger.debug("TIMESTAMP: $timestamp")
+                                val synAckTimestamp = timestamp.tsecr
+                                val now = System.currentTimeMillis().toUInt()
+                                // logger.debug("SYN ACK TIMESTAMP: $synAckTimestamp, NOW: $now")
+                                val R = (now - synAckTimestamp).toDouble() / 1000
+                                transmissionControlBlock!!.srtt = R
+                                transmissionControlBlock!!.rttvar = R / 2.0
+                                transmissionControlBlock!!.rto =
+                                    max(
+                                        1.0,
+                                        transmissionControlBlock!!.srtt + max(G, K * transmissionControlBlock!!.rttvar),
+                                    )
+                                // logger.debug("R: $R, SRTT: ${transmissionControlBlock!!.srtt}, RTTVAR: ${transmissionControlBlock!!.rttvar}, RTO: ${transmissionControlBlock!!.rto}")
+                            }
+
+                            // 6th check the urg bit
+                            if (tcpHeader.isUrg()) {
+                                // If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP), and
+                                //            signal the user that the remote side has urgent data if the
+                                //            urgent pointer (RCV.UP) is in advance of the data consumed.
+                                //            If the user has already been signaled (or is still in the
+                                //            "urgent mode") for this continuous sequence of urgent data,
+                                //            do not signal the user again.
+                                if (transmissionControlBlock!!.rcv_up <= tcpHeader.urgentPointer) {
+                                    transmissionControlBlock!!.rcv_up = tcpHeader.urgentPointer
+                                }
+                            }
+
+                            // 7th: process the segment text
+                            val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                            assert(payloadSize == payload.size.toUInt())
+                            if (payload.isNotEmpty()) {
+                                //session.addPayloadForInternet(payload, payload.size)
+                                session.channel.write(ByteBuffer.wrap(payload))
+                                val ack =
+                                    TcpHeaderFactory.createAckPacket(
+                                        ipHeader,
+                                        tcpHeader,
+                                        seqNumber = transmissionControlBlock!!.snd_nxt,
+                                        ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                        transmissionControlBlock = transmissionControlBlock,
+                                    )
+                                if (tcpHeader.isPsh()) {
+                                    return@runBlocking listOf(ack)
+                                } else {
+                                    val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
+                                    session.lastestACKs.add(retransmittablePacket)
+                                }
+                            }
+
+                            // 8th: check the FIN bit
+                            if (tcpHeader.isFin()) {
+                                logger.debug("Received FIN in ESTABLISHED state, transitioning to CLOSE_WAIT: $tcpHeader")
+                                transmissionControlBlock!!.rcv_nxt =
+                                    tcpHeader.sequenceNumber + 1u // advance RCV.NXT over the FIN
+                                tcpState = TcpState.CLOSE_WAIT
+                                transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                                return@runBlocking listOf(
+                                    TcpHeaderFactory.createAckPacket(
+                                        ipHeader,
+                                        tcpHeader,
+                                        seqNumber = transmissionControlBlock!!.snd_nxt,
+                                        ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                        transmissionControlBlock = transmissionControlBlock,
+                                    ),
                                 )
-                                false
-                            } else {
-                                true
                             }
                         } else {
-                            logger.warn(
-                                "SequenceNumberNotInWindow: TCP Sequence number is " +
-                                    "within range but the Segment end is not",
+                            // RFC9293: If the segment is not acceptable, form a reset segment and send it
+                            val lowerBound = transmissionControlBlock!!.snd_una
+                            val upperBound = transmissionControlBlock!!.snd_nxt
+                            logger.error(
+                                "Received unacceptable ACK in SYN_RECEIVED state expecting " +
+                                        "($lowerBound, $upperBound), have " +
+                                        "${tcpHeader.acknowledgementNumber}, sending RST",
                             )
-                            false
-                        }
-                    } else {
-                        // TODO: check if recvNext could ever rollback here..?
-                        logger.warn(
-                            "SequenceNumberNotInWindow: TCP Sequence number is between " +
-                                "recvWindow and UInt max, but is before recvNext",
-                        )
-                        false
-                    }
-                } else {
-                    // Seq# is before the UShort window, therefore check left & right bound simply
-                    // First check if there is a weird rollback on recvNext - 1U but not on the seq#
-                    if (recvNext - 1U >= (UInt.MAX_VALUE - recvWindow) &&
-                        tcpHeader.sequenceNumber < recvWindow
-                    ) {
-                        if (segmentEnd < recvWindowMax) {
-                            true
-                        } else {
-                            logger.warn(
-                                "SequenceNumberNotInWindow: TCP Sequence NUmber is " +
-                                    "within range but the segment end is not",
+                            return@runBlocking listOf(
+                                TcpHeaderFactory.createRstPacket(
+                                    ipHeader,
+                                    tcpHeader,
+                                    transmissionControlBlock = transmissionControlBlock,
+                                ),
                             )
-                            false
-                        }
-                    } else {
-                        // No weird rollbacks, simplest case here
-                        if (tcpHeader.sequenceNumber in recvNext until recvWindowMax &&
-                            segmentEnd in recvNext - 1U until recvWindowMax
-                        ) {
-                            true
-                        } else {
-                            logger.warn(
-                                "SequenceNumberNotInWindow, no rollbacks but is out " +
-                                    "of range SEQ: {}, SEGMENT END: {} RECVNEXT: {}, RECVWINDOWMAX: {}",
-                                tcpHeader.sequenceNumber,
-                                segmentEnd,
-                                recvNext,
-                                recvWindowMax,
-                            )
-                            false
                         }
                     }
                 }
+                return@runBlocking emptyList()
             }
+
+        // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
+        // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
+        // on the mutex
+        if (tcpState == TcpState.CLOSE_WAIT) {
+            // todo: figure out this encapsulation thing
+            // return packets.plus(encapsulateSessionBuffer(session))
         }
-    }
-
-    /**
-     * Update send window (prevent old segments from updating the window)
-     * From: https://datatracker.ietf.org/doc/html/rfc793#page-72
-     *
-     * If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ and SND.WL2 =< SEG.ACK)),
-     * set SND.WND <- SEG.WND, set SND.WL1 <- SEG.SEQ, and set SND.WL2 <- SEG.ACK.
-     *
-     * Note that SND.WND is an offset from SND.UNA, that SND.WL1
-     * records the sequence number of the last segment used to update
-     * SND.WND, and that SND.WL2 records the acknowledgment number of
-     * the last segment used to update SND.WND.  The check here
-     * prevents using old segments to update the window.
-     *
-     * sendWindow = SND.WND
-     * sendWindowUpdateSequence = SND.WL1
-     * sendWindowUpdateAck = SND.WL2
-     *
-     * To make this function more clear, we can either update the send window on 1) a newer
-     * sequence number than the last time we updated (ie: SND.WL1). Otherwise we can update if
-     * we get an ACK for the SND.WL1 and we're receiving a newer ACK than the last time we updated
-     * via an ACK (SND.WL2).
-     *
-     * Moved into a function for testability.
-     */
-    fun sendWindowUpdate(tcpHeader: TcpHeader) {
-        // first: check if the sequence number is newer than the sequence number when we last
-        // updated the window
-        if (sendWindowUpdateSequence < tcpHeader.sequenceNumber ||
-            // otherwise check if the last time we updated the window was the packet we're waiting
-            // for an ACK from, and the ACK packet update sequence is newer
-            (
-                sendWindowUpdateSequence == sendUnacknowledged &&
-                    sendWindowUpdateAck <= tcpHeader.acknowledgementNumber
-            )
-        ) {
-            sendWindow = tcpHeader.windowSize
-            sendWindowUpdateSequence = tcpHeader.sequenceNumber
-            sendWindowUpdateAck = tcpHeader.acknowledgementNumber
-        }
-    }
-
-    /**
-     * Page 72: ESTABLISHED STATE
-     *
-     * Not private for testing purposes.
-     */
-    fun establishedProcessAck(
-        ipHeader: IpHeader,
-        tcpHeader: TcpHeader,
-    ): Packet? {
-        if (tcpHeader.acknowledgementNumber in (sendUnacknowledged + 1u)..sendNext) {
-            sendUnacknowledged = tcpHeader.acknowledgementNumber
-
-            removeAckedPacketsFromRetransmit()
-            sendWindowUpdate(tcpHeader)
-        } else if (tcpHeader.acknowledgementNumber < sendUnacknowledged) {
-            // page 72: If the ACK is a duplicate (the sequence number of the
-            //        segment acknowledged is below SND.UNA) then it can be
-            //        ignored.
-            logger.warn("Got duplicate ACK from client, ignoring: $tcpHeader")
-        } else if (tcpHeader.acknowledgementNumber > sendNext) {
-            // page 72: If the ACK acknowledges something not yet sent (the
-            //        acknowledgment number is above SND.NXT) then send an ACK,
-            //        drop the segment, and return.
-            logger.warn(
-                "Got ACK from client which acknowledges something not yet sent," +
-                    " ignoring: $tcpHeader",
-            )
-            return TcpHeaderFactory.createAckPacket(
-                ipHeader,
-                tcpHeader,
-                sendNext,
-                recvNext,
-            )
-        }
-        return null
-    }
-
-    /**
-     * process the segment text (page 74)
-     *
-     * move the received payload into the buffer from Internet to VPN client
-     */
-    private fun processText(
-        ipHeader: IpHeader,
-        tcpHeader: TcpHeader,
-        payload: ByteArray,
-    ): Packet? {
-        // todo: use the remaining recv buffer capacity to limit how much is actually accepted
-        // https://linear.app/bumpapp/issue/BUMP-310/tcp-adjust-the-recv-window
-        // and return a response with the window size + the amount of data accepted remaining
-        // constant (reduce the window size by the difference between the amount of data
-        // accepted and the amount of data in the segment)
-        // see page 74
-        val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
-        if (payloadSize > 0u) {
-            //session.addPayloadForInternet(payload)
-            val bytesWritten = session.channel.write(ByteBuffer.wrap(payload))
-            if (bytesWritten != payloadSize.toInt()) {
-                logger.warn("Didn't write full payload, expecting $payloadSize got $bytesWritten")
-            }
-            recvNext = recvNext + bytesWritten.toUInt() // only make an ACK for whatever we actually accepted
-            if (tcpHeader.isPsh()) {
-                pshReceived = true
-            }
-            val dataAck =
-                TcpHeaderFactory.createAckPacket(
-                    ipHeader,
-                    tcpHeader,
-                    sendNext,
-                    recvNext,
-                )
-            // logger.trace("Got: $tcpHeader \nSending back: ${dataAck.ipNextHeader}: $tcpHeader")
-            return dataAck
-        }
-        return null
-    }
-
-    /**
-     * Performs a few common basic checks. If any check fails the response Packet will be non-null.
-     * There are some states which handle close to this but have special state changes, so they
-     * might not be able to re-use this code as is.
-     */
-    private fun basicChecks(
-        ipHeader: IpHeader,
-        tcpHeader: TcpHeader,
-    ): Packet? {
-        // page 69, lists states which should do this check first and return and ACK and drop
-        // the segment, unless the RST bit is set.
-        // todo: debug whats up here
-        // https://linear.app/bumpapp/issue/BUMP-309/determine-why-isinwindow-is-often-reporting-out-of-window-packets
-        if (!isInWindow(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
-            logger.warn("NOT IN WINDOW! ACK-ing and dropping segment: $tcpHeader")
-            return TcpHeaderFactory.createAckPacket(
-                ipHeader,
-                tcpHeader,
-                sendNext,
-                recvNext,
-            )
-        }
-
-        // page 69
-        if (tcpHeader.isRst()) {
-            logger.error("Got RST from client in state $tcpState, changing state to CLOSED: $this")
-            tcpState = TcpState.CLOSED
-            isClosed = true
-            return TcpHeaderFactory.createRstPacket(ipHeader, tcpHeader)
-        }
-
-        if (tcpHeader.isSyn()) {
-            // page 71: If the SYN is in the window it is an error, send a reset, any
-            //        outstanding RECEIVEs and SEND should receive "reset" responses,
-            //        all segment queues should be flushed, the user should also
-            //        receive an unsolicited general "connection reset" signal, enter
-            //        the CLOSED state, delete the TCB, and return.
-            //
-            //        If the SYN is not in the window this step would not be reached
-            //        and an ack would have been sent in the first step (sequence
-            //        number check).
-            logger.warn("GOT SYN from client in state $tcpState, sending RST: $this")
-            return TcpHeaderFactory.createRstPacket(ipHeader, tcpHeader)
-        }
-
-        return null
+        return packets
     }
 
     /**
@@ -696,56 +807,213 @@ class TcpStateMachine(
         tcpHeader: TcpHeader,
         payload: ByteArray,
     ): List<Packet> {
-        val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse != null) {
-            return listOf(basicResponse)
+        val packets =
+            runBlocking {
+                tcbMutex.withLock {
+                    if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+
+                    if (tcpHeader.isRst()) {
+                        // 1)  If the RST bit is set and the sequence number is outside
+                        //             the current receive window, silently drop the segment.
+                        if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt ||
+                            tcpHeader.sequenceNumber > transmissionControlBlock!!.rcv_nxt + transmissionControlBlock!!.rcv_wnd
+                        ) {
+                            logger.warn(
+                                "Received RST in ESTABLISHED state, but sequence number is " +
+                                        "outside of the receive window, dropping: $tcpHeader",
+                            )
+                            return@runBlocking emptyList<Packet>()
+                        }
+                        // 2)  If the RST bit is set and the sequence number exactly
+                        //             matches the next expected sequence number (RCV.NXT), then
+                        //             TCP endpoints MUST reset the connection in the manner
+                        //             prescribed below according to the connection state.
+                        //
+                        // If the RST bit is set, then any outstanding RECEIVEs and
+                        //            SEND should receive "reset" responses.  All segment queues
+                        //            should be flushed.  Users should also receive an unsolicited
+                        //            general "connection reset" signal.  Enter the CLOSED state,
+                        //            delete the TCB, and return.
+                        if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                            logger.warn(
+                                "Received RST in ESTABLISHED state, transitioning to CLOSED: {}",
+                                tcpHeader,
+                            )
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            tcpState = TcpState.CLOSED
+                            isClosed = true
+                            transmissionControlBlock = null
+                            retransmitQueue.clear()
+                            return@runBlocking emptyList<Packet>()
+                        }
+
+                        // 3)  If the RST bit is set and the sequence number does not
+                        //             exactly match the next expected sequence value, yet is
+                        //             within the current receive window, TCP endpoints MUST send
+                        //             an acknowledgment (challenge ACK):
+                        //
+                        //             <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                        //
+                        //             After sending the challenge ACK, TCP endpoints MUST drop
+                        //             the unacceptable segment and stop processing the incoming
+                        //             packet further.  Note that RFC 5961 and Errata ID 4772 [99]
+                        //             contain additional considerations for ACK throttling in an
+                        //             implementation.
+                        logger.warn("Received RST in ESTABLISHED state, sending challenge ACK: $tcpHeader")
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+
+                    if (tcpHeader.isSyn()) {
+                        logger.error("Got SYN in ESTABLISHED state, sending challenge ACK: $tcpHeader")
+                        // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
+                        //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
+                        //   state, deleting the TCP, queues flushed.
+                        //   After ACK-ing the segment, it should be dropped, and stop processing
+                        //     further, ie no data processing. (and possibly no further processing of
+                        //       any additional segments? unclear)
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+
+                    // 5th: check ACK field
+                    if (tcpHeader.isAck()) {
+                        if (isAckAcceptable(tcpHeader)) {
+                            logger.debug("Received ACK in ESTABLISHED state, updating snd_una: $tcpHeader")
+                            transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            removeAckedPacketsFromRetransmit()
+                            updateTimestamp(tcpHeader)
+                            updateCongestionState()
+                            updateSendWindow(tcpHeader)
+                            updateRTO()
+                        } else {
+                            logger.debug("Received unacceptable ACK in ESTABLISHED state")
+                            if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una) {
+                                // ignore duplicate ACKs
+                                logger.debug("Duplicate ACK received, ignoring: $tcpHeader")
+                            }
+                            if (tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt) {
+                                // acking something not yet sent: ack, drop and return
+                                logger.error("ACKing something not yet sent: $tcpHeader")
+                                // not sure if we send the ack / seq with the transmissionControlBlock values
+                                //   or the values from the incoming packet (spec is unclear)
+                                return@runBlocking listOf(
+                                    TcpHeaderFactory.createAckPacket(
+                                        ipHeader,
+                                        tcpHeader,
+                                        seqNumber = transmissionControlBlock!!.snd_nxt,
+                                        ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                        transmissionControlBlock = transmissionControlBlock,
+                                    ),
+                                )
+                            }
+                        }
+                    } else {
+                        // if the ACK bit is off, drop the segment and return
+                        return@runBlocking emptyList<Packet>()
+                    }
+
+                    // 6th check the urg bit
+                    if (tcpHeader.isUrg()) {
+                        // If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP), and
+                        //            signal the user that the remote side has urgent data if the
+                        //            urgent pointer (RCV.UP) is in advance of the data consumed.
+                        //            If the user has already been signaled (or is still in the
+                        //            "urgent mode") for this continuous sequence of urgent data,
+                        //            do not signal the user again.
+                        if (transmissionControlBlock!!.rcv_up <= tcpHeader.urgentPointer) {
+                            transmissionControlBlock!!.rcv_up = tcpHeader.urgentPointer
+                        }
+                    }
+
+                    // 7th: process the segment text
+                    if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt) {
+                        logger.error("ALREADY RECEIVED SEGMENT, SHOULD IGNORE: $tcpHeader")
+                    }
+                    val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                    assert(payloadSize == payload.size.toUInt())
+                    if (payload.isNotEmpty()) {
+                        //session.addPayloadForInternet(payload, payload.size)
+                        session.channel.write(ByteBuffer.wrap(payload))
+                        val ack =
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            )
+                        if (tcpHeader.isPsh()) {
+                            logger.debug(
+                                "Received PSH in ESTABLISHED state, sending ACK " +
+                                        "immediately SEQ: " +
+                                        "${(ack.nextHeaders as TcpHeader).sequenceNumber} ACK: " +
+                                        "${(ack.nextHeaders as TcpHeader).acknowledgementNumber}",
+                            )
+                        }
+                        val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
+                        session.lastestACKs.add(retransmittablePacket)
+                    }
+
+                    // 8th: check the FIN bit
+                    if (tcpHeader.isFin()) {
+                        logger.debug("Received FIN in ESTABLISHED state, transitioning to CLOSE_WAIT: $tcpHeader")
+                        transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
+                        tcpState = TcpState.CLOSE_WAIT
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+                }
+                // logger.warn("Shouldn't have got here")
+                return@runBlocking emptyList()
+            }
+
+        // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
+        // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
+        // on the mutex
+        if (tcpState == TcpState.CLOSE_WAIT) {
+            // TODO figure out this encapulate thing
+            // return packets.plus(encapsulateSessionBuffer(session))
         }
-
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-            return emptyList()
-        } else {
-            val responses = ArrayList<Packet>()
-            val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse != null) {
-                responses.add(ackResponse)
-                return responses
-            }
-
-            // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
-            // This acknowledgment should be piggybacked on a segment being
-            //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload)
-            if (dataAck != null) {
-                responses.add(dataAck)
-            }
-
-            // page 75: check for FIN bit, and if set, move to CLOSE-WAIT state
-            if (tcpHeader.isFin()) {
-                pshReceived = true
-                recvNext++
-
-                // add an ACK for the FIN
-                responses.add(
-                    TcpHeaderFactory.createAckPacket(
-                        ipHeader,
-                        tcpHeader,
-                        sendNext,
-                        recvNext,
-                    ),
-                )
-
-                // todo: some type of flushing of any remaining data
-            }
-
-            return responses
-        }
+        return packets
     }
 
     /**
      * NB: whoever puts us into this state must immediately afterwards call
-     * [encapsulateTcpSessionBuffer] which will flush the buffer and enqueue a FIN-ACK packet to
+     * [encapsulateSessionBuffer] which will flush the buffer and enqueue a FIN-ACK packet to
      * the client.
      */
     private fun handleFinWait1State(
@@ -753,61 +1021,225 @@ class TcpStateMachine(
         tcpHeader: TcpHeader,
         payload: ByteArray,
     ): List<Packet> {
-        val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse != null) {
-            return listOf(basicResponse)
-        }
-
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-            return emptyList()
-        } else {
-            val responses = ArrayList<Packet>()
-            val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse != null) {
-                responses.add(ackResponse)
-                return responses
-            }
-
-            // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
-            // https://linear.app/bumpapp/issue/BUMP-311/piggyback-ack-on-existing-data
-            // This acknowledgment should be piggybacked on a segment being
-            //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload)
-            if (dataAck != null) {
-                responses.add(dataAck)
-            }
-
-            // got ACK for FIN, transition to FIN_WAIT_2
-            if (tcpHeader.acknowledgementNumber == finSeq) {
-                finHasBeenAcked = true
-                tcpState = TcpState.FIN_WAIT_2
-            }
-
-            // page 75: check for FIN bit. If ours has been ACKd, then move to TIME_WAIT
-            if (tcpHeader.isFin()) {
-                pshReceived = true
-                recvNext++
-                tcpState =
-                    if (finHasBeenAcked) {
-                        timeWaitTime = System.currentTimeMillis()
-                        TcpState.TIME_WAIT
-                    } else {
-                        TcpState.CLOSING
+        val packets =
+            runBlocking {
+                tcbMutex.withLock {
+                    if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
+                        logger.warn("Received unacceptable sequence number in FIN_WAIT1 state, sending ACK: $tcpHeader")
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
                     }
-                // add an ACK for the FIN
-                responses.add(
-                    TcpHeaderFactory.createAckPacket(
-                        ipHeader,
-                        tcpHeader,
-                        sendNext,
-                        recvNext,
-                    ),
-                )
+                    logger.debug("ACCEPTABLE SEQ: ${tcpHeader.sequenceNumber}, RCV.NXT: ${transmissionControlBlock!!.rcv_nxt}")
+
+                    if (tcpHeader.isRst()) {
+                        // 1)  If the RST bit is set and the sequence number is outside
+                        //             the current receive window, silently drop the segment.
+                        if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt ||
+                            tcpHeader.sequenceNumber > transmissionControlBlock!!.rcv_nxt +
+                            transmissionControlBlock!!.rcv_wnd
+                        ) {
+                            logger.warn(
+                                "Received RST in FIN_WAIT1 state, but sequence number is outside " +
+                                        "of the receive window, dropping: $tcpHeader",
+                            )
+                            return@runBlocking emptyList<Packet>()
+                        }
+                        // 2)  If the RST bit is set and the sequence number exactly
+                        //             matches the next expected sequence number (RCV.NXT), then
+                        //             TCP endpoints MUST reset the connection in the manner
+                        //             prescribed below according to the connection state.
+                        //
+                        // If the RST bit is set, then any outstanding RECEIVEs and
+                        //            SEND should receive "reset" responses.  All segment queues
+                        //            should be flushed.  Users should also receive an unsolicited
+                        //            general "connection reset" signal.  Enter the CLOSED state,
+                        //            delete the TCB, and return.
+                        if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            logger.warn(
+                                "Received RST in FIN_WAIT1 state, transitioning to CLOSED: {}",
+                                tcpHeader,
+                            )
+                            tcpState = TcpState.CLOSED
+                            isClosed = true
+                            transmissionControlBlock = null
+                            retransmitQueue.clear()
+                            return@runBlocking emptyList<Packet>()
+                        }
+
+                        // 3)  If the RST bit is set and the sequence number does not
+                        //             exactly match the next expected sequence value, yet is
+                        //             within the current receive window, TCP endpoints MUST send
+                        //             an acknowledgment (challenge ACK):
+                        //
+                        //             <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                        //
+                        //             After sending the challenge ACK, TCP endpoints MUST drop
+                        //             the unacceptable segment and stop processing the incoming
+                        //             packet further.  Note that RFC 5961 and Errata ID 4772 [99]
+                        //             contain additional considerations for ACK throttling in an
+                        //             implementation.
+                        logger.warn("Received RST in FIN_WAIT1 state, sending challenge ACK: $tcpHeader")
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+
+                    if (tcpHeader.isSyn()) {
+                        logger.error("Got SYN in FIN_WAIT1 state, sending challenge ACK: $tcpHeader")
+                        // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
+                        //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
+                        //   state, deleting the TCP, queues flushed.
+                        //   After ACK-ing the segment, it should be dropped, and stop processing
+                        //     further, ie no data processing. (and possibly no further processing of
+                        //       any additional segments? unclear)
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+
+                    // 5th: check ACK field
+                    if (tcpHeader.isAck()) {
+                        if (isAckAcceptable(tcpHeader)) {
+                            transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            removeAckedPacketsFromRetransmit()
+                            updateTimestamp(tcpHeader)
+                            updateCongestionState()
+                            updateSendWindow(tcpHeader)
+                            updateRTO()
+                        } else {
+                            if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una) {
+                                // ignore duplicate ACKs
+                                logger.debug("Duplicate ACK received, ignoring: $tcpHeader")
+                            }
+                            if (tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt) {
+                                // acking something not yet sent: ack, drop and return
+                                logger.error("ACKing something not yet sent: $tcpHeader")
+                                // not sure if we send the ack / seq with the transmissionControlBlock values
+                                //   or the values from the incoming packet (spec is unclear)
+                                return@runBlocking listOf(
+                                    TcpHeaderFactory.createAckPacket(
+                                        ipHeader,
+                                        tcpHeader,
+                                        seqNumber = transmissionControlBlock!!.snd_nxt,
+                                        ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                        transmissionControlBlock = transmissionControlBlock,
+                                    ),
+                                )
+                            }
+                        }
+
+                        // In addition to the processing for the ESTABLISHED state,
+                        //               if the FIN segment is now acknowledged, then enter FIN-
+                        //               WAIT-2 and continue processing in that state.
+                        if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
+                            logger.debug("Received ACK for FIN in FIN_WAIT1 state, transitioning to FIN_WAIT2: $tcpHeader")
+                            transmissionControlBlock!!.fin_acked = true
+                            tcpState = TcpState.FIN_WAIT_2
+                        } else {
+                            logger.debug(
+                                "didn't get ACK for FIN, expecting " +
+                                        "${transmissionControlBlock!!.fin_seq}, got " +
+                                        "${tcpHeader.acknowledgementNumber}",
+                            )
+                        }
+                    } else {
+                        // if the ACK bit is off, drop the segment and return
+                        return@runBlocking emptyList<Packet>()
+                    }
+
+                    // 6th check the urg bit
+                    // TOOD: might need to not return above in order to actually get. Perhaps the "stop processing" means to not continue with these steps and return
+                    if (tcpHeader.isUrg()) {
+                        // If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP), and
+                        //            signal the user that the remote side has urgent data if the
+                        //            urgent pointer (RCV.UP) is in advance of the data consumed.
+                        //            If the user has already been signaled (or is still in the
+                        //            "urgent mode") for this continuous sequence of urgent data,
+                        //            do not signal the user again.
+                        if (transmissionControlBlock!!.rcv_up <= tcpHeader.urgentPointer) {
+                            transmissionControlBlock!!.rcv_up = tcpHeader.urgentPointer
+                        }
+                    }
+
+                    // 7th: process the segment text
+                    val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                    assert(payloadSize == payload.size.toUInt())
+                    if (payload.isNotEmpty()) {
+                        //session.addPayloadForInternet(payload, payload.size)
+                        session.channel.write(ByteBuffer.wrap(payload))
+                        val ack =
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            )
+                        if (tcpHeader.isPsh()) {
+                            return@runBlocking listOf(ack)
+                        } else {
+                            val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
+                            session.lastestACKs.add(retransmittablePacket)
+                        }
+                    }
+
+                    // 8th: check the FIN bit
+                    if (tcpHeader.isFin()) {
+                        logger.debug("GOT FINNNNNNNNNN")
+                        transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        if (transmissionControlBlock!!.fin_acked) {
+                            logger.debug("Received FIN after our FIN has been acked, transition to TIME_WAIT: $tcpHeader")
+                            // TODO: turn off other timers?
+                            transmissionControlBlock!!.time_wait_time_ms = System.currentTimeMillis()
+                            tcpState = TcpState.TIME_WAIT
+                        } else {
+                            logger.debug("Received FIN, but our's hasn't been ACK'd transitioning to CLOSING state: $tcpHeader")
+                            tcpState = TcpState.CLOSING
+                        }
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+                }
+                // logger.warn("Shouldn't have got here")
+                return@runBlocking emptyList()
             }
-            return responses
+        // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
+        // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
+        // on the mutex
+        if (tcpState == TcpState.TIME_WAIT || tcpState == TcpState.CLOSING) {
+            // todo figure out this encapsulate
+            // return packets.plus(encapsulateSessionBuffer(session))
         }
+        return packets
     }
 
     private fun handleFinWait2State(
@@ -815,193 +1247,190 @@ class TcpStateMachine(
         tcpHeader: TcpHeader,
         payload: ByteArray,
     ): List<Packet> {
-        val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse != null) {
-            return listOf(basicResponse)
-        }
+        return runBlocking {
+            tcbMutex.withLock {
+                if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
+                    logger.warn("Received unacceptable sequence number in FIN_WAIT2 state, sending ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
 
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-            return emptyList()
-        } else {
-            val responses = ArrayList<Packet>()
-            val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse != null) {
-                responses.add(ackResponse)
-                return responses
-            }
+                if (tcpHeader.isRst()) {
+                    // 1)  If the RST bit is set and the sequence number is outside
+                    //             the current receive window, silently drop the segment.
+                    if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt ||
+                        tcpHeader.sequenceNumber > transmissionControlBlock!!.rcv_nxt +
+                        transmissionControlBlock!!.rcv_wnd
+                    ) {
+                        logger.warn(
+                            "Received RST in FIN_WAIT2 state, but sequence number is outside of the receive window, dropping: $tcpHeader",
+                        )
+                        return@runBlocking emptyList<Packet>()
+                    }
+                    // 2)  If the RST bit is set and the sequence number exactly
+                    //             matches the next expected sequence number (RCV.NXT), then
+                    //             TCP endpoints MUST reset the connection in the manner
+                    //             prescribed below according to the connection state.
+                    //
+                    // If the RST bit is set, then any outstanding RECEIVEs and
+                    //            SEND should receive "reset" responses.  All segment queues
+                    //            should be flushed.  Users should also receive an unsolicited
+                    //            general "connection reset" signal.  Enter the CLOSED state,
+                    //            delete the TCB, and return.
+                    if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                        logger.warn(
+                            "Received RST in FIN_WAIT2 state, transitioning to CLOSED: {}",
+                            tcpHeader,
+                        )
+                        tcpState = TcpState.CLOSED
+                        isClosed = true
+                        transmissionControlBlock = null
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        retransmitQueue.clear()
+                        return@runBlocking emptyList<Packet>()
+                    }
 
-            // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
-            // This acknowledgment should be piggybacked on a segment being
-            //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload)
-            if (dataAck != null) {
-                responses.add(dataAck)
-            }
+                    // 3)  If the RST bit is set and the sequence number does not
+                    //             exactly match the next expected sequence value, yet is
+                    //             within the current receive window, TCP endpoints MUST send
+                    //             an acknowledgment (challenge ACK):
+                    //
+                    //             <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                    //
+                    //             After sending the challenge ACK, TCP endpoints MUST drop
+                    //             the unacceptable segment and stop processing the incoming
+                    //             packet further.  Note that RFC 5961 and Errata ID 4772 [99]
+                    //             contain additional considerations for ACK throttling in an
+                    //             implementation.
+                    logger.warn("Received RST in FIN_WAIT2 state, sending challenge ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
 
-            // "user's close can be acknowledged - the user making the 'close' in this case is the
-            // internet side of the connection, I'm not sure if we actually need to do anything
-            // here. (page  73)
+                if (tcpHeader.isSyn()) {
+                    logger.error("Got SYN in FIN_WAIT2 state, sending challenge ACK: $tcpHeader")
+                    // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
+                    //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
+                    //   state, deleting the TCP, queues flushed.
+                    //   After ACK-ing the segment, it should be dropped, and stop processing
+                    //     further, ie no data processing. (and possibly no further processing of
+                    //       any additional segments? unclear)
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
 
-            // page 75: check for FIN bit, and if set, move to TIME-WAIT
-            if (tcpHeader.isFin()) {
-                pshReceived = true
-                recvNext++
-                timeWaitTime = System.currentTimeMillis()
-                tcpState = TcpState.TIME_WAIT
-                // add an ACK for the FIN
-                responses.add(
-                    TcpHeaderFactory.createAckPacket(
+                // 5th: check ACK field
+                if (tcpHeader.isAck()) {
+                    if (isAckAcceptable(tcpHeader)) {
+                        transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                        removeAckedPacketsFromRetransmit()
+                        updateTimestamp(tcpHeader)
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        updateCongestionState()
+                        updateSendWindow(tcpHeader)
+                        updateRTO()
+                    } else {
+                        if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una) {
+                            // ignore duplicate ACKs
+                            logger.debug("Duplicate ACK received, ignoring: $tcpHeader")
+                        }
+                        if (tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt) {
+                            // acking something not yet sent: ack, drop and return
+                            logger.error("ACKing something not yet sent: $tcpHeader")
+                            // not sure if we send the ack / seq with the transmissionControlBlock values
+                            //   or the values from the incoming packet (spec is unclear)
+                            return@runBlocking listOf(
+                                TcpHeaderFactory.createAckPacket(
+                                    ipHeader,
+                                    tcpHeader,
+                                    seqNumber = transmissionControlBlock!!.snd_nxt,
+                                    ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                    transmissionControlBlock = transmissionControlBlock,
+                                ),
+                            )
+                        }
+                    }
+
+                    // In addition to the processing for the ESTABLISHED state,
+                    //               if the retransmission queue is empty, the user's CLOSE
+                    //               can be acknowledged ("ok") but do not delete the TCB.
+                } else {
+                    // if the ACK bit is off, drop the segment and return
+                    return@runBlocking emptyList<Packet>()
+                }
+
+                // 6th check the urg bit
+                // TOOD: might need to not return above in order to actually get. Perhaps the "stop processing" means to not continue with these steps and return
+                if (tcpHeader.isUrg()) {
+                    // If the URG bit is set, RCV.UP <- max(RCV.UP,SEG.UP), and
+                    //            signal the user that the remote side has urgent data if the
+                    //            urgent pointer (RCV.UP) is in advance of the data consumed.
+                    //            If the user has already been signaled (or is still in the
+                    //            "urgent mode") for this continuous sequence of urgent data,
+                    //            do not signal the user again.
+                    if (transmissionControlBlock!!.rcv_up <= tcpHeader.urgentPointer) {
+                        transmissionControlBlock!!.rcv_up = tcpHeader.urgentPointer
+                    }
+                }
+
+                // 7th: process the segment text
+                val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                assert(payloadSize == payload.size.toUInt())
+                if (payload.isNotEmpty()) {
+                    //session.addPayloadForInternet(payload, payload.size)
+                    session.channel.write(ByteBuffer.wrap(payload))
+                    val ack = TcpHeaderFactory.createAckPacket(
                         ipHeader,
                         tcpHeader,
-                        sendNext,
-                        recvNext,
-                    ),
-                )
+                        seqNumber = transmissionControlBlock!!.snd_nxt,
+                        ackNumber = transmissionControlBlock!!.rcv_nxt,
+                        transmissionControlBlock = transmissionControlBlock
+                    )
+                    val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
+                    session.lastestACKs.add(retransmittablePacket)
+                }
+
+                // 8th: check the FIN bit
+                if (tcpHeader.isFin()) {
+                    logger.debug("Received FIN in FIN_WAIT2 state, transitioning to TIME_WAIT: $tcpHeader")
+                    transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                    transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
+                    transmissionControlBlock!!.time_wait_time_ms = System.currentTimeMillis()
+                    tcpState = TcpState.TIME_WAIT
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
             }
-
-            return responses
-        }
-    }
-
-    private fun handleClosingState(
-        ipHeader: IpHeader,
-        tcpHeader: TcpHeader,
-        payload: ByteArray,
-    ): List<Packet> {
-        val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse != null) {
-            return listOf(basicResponse)
-        }
-
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-            return emptyList()
-        } else {
-            val responses = ArrayList<Packet>()
-            val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse != null) {
-                responses.add(ackResponse)
-                return responses
-            }
-
-            // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
-            // This acknowledgment should be piggybacked on a segment being
-            //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload)
-            if (dataAck != null) {
-                responses.add(dataAck)
-            }
-
-            if (tcpHeader.acknowledgementNumber == finSeq) {
-                timeWaitTime = System.currentTimeMillis()
-                tcpState = TcpState.TIME_WAIT
-            }
-            return responses
-        }
-    }
-
-    private fun handleTimeWaitState(
-        ipHeader: IpHeader,
-        tcpHeader: TcpHeader,
-        payload: ByteArray,
-    ): List<Packet> {
-        // this diverges from RFC793 in the case of TIME_WAIT so we don't have the long wait
-        // before we can reuse the port. See:
-        // https://linear.app/bumpapp/issue/BUMP-379/tcp-implement-a-fix-for-long-delay-on-server-side-teardown
-        if (tcpHeader.isSyn()) {
-            tcpState = TcpState.CLOSED
-            try {
-                // if we don't reset these, the session will still have the old seq numbers
-                // in them
-                // lastIPHeader = ipHeader
-                // lastTransportHeader = tcpHeader
-                session.reestablishConnection()
-            } catch (e: NoRouteToHostException) {
-                logger.error("No route to host re-establishing connection to $session.remoteAddress", e)
-                // TODO: revisit whether the from address for the ICMP packet should be this device ip instead.
-                val icmpPacket =
-                    when (ipHeader) {
-                        is Ipv4Header ->
-                            createDestinationUnreachable(
-                                ICMPv4DestinationUnreachableCodes.HOST_UNREACHABLE,
-                                ipHeader.destinationAddress,
-                                ipHeader,
-                                tcpHeader,
-                                payload,
-                            )
-                        is Ipv6Header ->
-                            createDestinationUnreachable(
-                                ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE,
-                                ipHeader.destinationAddress,
-                                ipHeader,
-                                tcpHeader,
-                                payload,
-                            )
-                        else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
-                    }
-                return listOf(icmpPacket)
-            } catch (e: ConnectException) {
-                logger.error("Connection refused during re-connection to $session.remoteAddress", e)
-                // TODO: revisit whether the from address for the ICMP packet should be this device ip instead.
-                val icmpPacket =
-                    when (ipHeader) {
-                        is Ipv4Header ->
-                            createDestinationUnreachable(
-                                ICMPv4DestinationUnreachableCodes.PORT_UNREACHABLE,
-                                ipHeader.destinationAddress,
-                                ipHeader,
-                                tcpHeader,
-                                payload,
-                            )
-                        is Ipv6Header ->
-                            createDestinationUnreachable(
-                                ICMPv6DestinationUnreachableCodes.PORT_UNREACHABLE,
-                                ipHeader.destinationAddress,
-                                ipHeader,
-                                tcpHeader,
-                                payload,
-                            )
-                        else -> throw PacketHeaderException("Unknown IP protocol: ${ipHeader::class.java.simpleName}")
-                    }
-                return listOf(icmpPacket)
-            } catch (e: Exception) {
-                // probably we're shutting down this session, no point to enqueue an ICMP
-                logger.error("Unexpected error re-establishing connection to $session.remoteAddress", e)
-                return emptyList()
-            }
-            return handleListenState(ipHeader, tcpHeader)
-        }
-
-        val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse != null) {
-            return listOf(basicResponse)
-        }
-
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-            return emptyList()
-        } else {
-            // page 73: The only thing that can arrive in this state is a
-            //          retransmission of the remote FIN.  Acknowledge it, and restart
-            //          the 2 MSL timeout.
-            if (tcpHeader.isFin()) {
-                // logger.trace("Got FIN from client while in TIME_WAIT state, sending ACK: $this")
-                // restart 2MSL timer
-                timeWaitTime = System.currentTimeMillis()
-                return listOf(
-                    TcpHeaderFactory.createAckPacket(
-                        ipHeader,
-                        tcpHeader,
-                        sendNext,
-                        recvNext,
-                    ),
-                )
-            }
-            return emptyList()
+            // logger.warn("Shouldn't have got here")
+            return@runBlocking emptyList()
         }
     }
 
@@ -1010,61 +1439,752 @@ class TcpStateMachine(
         tcpHeader: TcpHeader,
         payload: ByteArray,
     ): List<Packet> {
-        val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse != null) {
-            return listOf(basicResponse)
+        return runBlocking {
+            tcbMutex.withLock {
+                if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
+                    logger.warn("Received unacceptable sequence number in CLOSE_WAIT state, sending ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                if (tcpHeader.isRst()) {
+                    // 1)  If the RST bit is set and the sequence number is outside
+                    //             the current receive window, silently drop the segment.
+                    if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt ||
+                        tcpHeader.sequenceNumber > transmissionControlBlock!!.rcv_nxt +
+                        transmissionControlBlock!!.rcv_wnd
+                    ) {
+                        logger.warn(
+                            "Received RST in CLOSE-WAIT state, but sequence number is outside of the receive window, dropping: $tcpHeader",
+                        )
+                        return@runBlocking emptyList<Packet>()
+                    }
+                    // 2)  If the RST bit is set and the sequence number exactly
+                    //             matches the next expected sequence number (RCV.NXT), then
+                    //             TCP endpoints MUST reset the connection in the manner
+                    //             prescribed below according to the connection state.
+                    //
+                    // If the RST bit is set, then any outstanding RECEIVEs and SEND should receive "reset" responses. All segment queues should be flushed. Users should also receive an unsolicited general "connection reset" signal. Enter the CLOSED state, delete the TCB, and return.
+                    if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                        logger.warn(
+                            "Received RST in CLOSE-WAIT state, transitioning to CLOSED: {}",
+                            tcpHeader,
+                        )
+                        tcpState = TcpState.CLOSED
+                        isClosed = true
+                        transmissionControlBlock = null
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        retransmitQueue.clear()
+                        return@runBlocking emptyList<Packet>()
+                    }
+
+                    // 3)  If the RST bit is set and the sequence number does not
+                    //             exactly match the next expected sequence value, yet is
+                    //             within the current receive window, TCP endpoints MUST send
+                    //             an acknowledgment (challenge ACK):
+                    //
+                    //             <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                    //
+                    //             After sending the challenge ACK, TCP endpoints MUST drop
+                    //             the unacceptable segment and stop processing the incoming
+                    //             packet further.  Note that RFC 5961 and Errata ID 4772 [99]
+                    //             contain additional considerations for ACK throttling in an
+                    //             implementation.
+                    logger.warn("Received RST in CLOSE-WAIT state, sending challenge ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                if (tcpHeader.isSyn()) {
+                    // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
+                    //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
+                    //   state, deleting the TCP, queues flushed.
+                    //   After ACK-ing the segment, it should be dropped, and stop processing
+                    //     further, ie no data processing. (and possibly no further processing of
+                    //       any additional segments? unclear)
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                // 5th: check ACK field
+                if (tcpHeader.isAck()) {
+                    if (isAckAcceptable(tcpHeader)) {
+                        transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                        removeAckedPacketsFromRetransmit()
+                        updateTimestamp(tcpHeader)
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        updateCongestionState()
+                        updateSendWindow(tcpHeader)
+                        updateRTO()
+                    } else {
+                        if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una) {
+                            // ignore duplicate ACKs
+                            logger.debug("Duplicate ACK received, ignoring: $tcpHeader")
+                        }
+                        if (tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt) {
+                            // acking something not yet sent: ack, drop and return
+                            logger.error("ACKing something not yet sent: $tcpHeader")
+                            // not sure if we send the ack / seq with the transmissionControlBlock values
+                            //   or the values from the incoming packet (spec is unclear)
+                            return@runBlocking listOf(
+                                TcpHeaderFactory.createAckPacket(
+                                    ipHeader,
+                                    tcpHeader,
+                                    seqNumber = transmissionControlBlock!!.snd_nxt,
+                                    ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                    transmissionControlBlock = transmissionControlBlock,
+                                ),
+                            )
+                        }
+                    }
+
+                    // In addition to the processing for the ESTABLISHED state, if the ACK acknowledges our FIN, then enter the TIME-WAIT state; otherwise, ignore the segment.
+                    if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        logger.debug("Received ACK for FIN in CLOSE_WAIT state, transitioning to TIME_WAIT: $tcpHeader")
+                        transmissionControlBlock!!.fin_acked = true
+                        tcpState = TcpState.TIME_WAIT
+                    } else {
+                        logger.debug(
+                            "didn't get ACK for FIN, expecting " +
+                                    "${transmissionControlBlock!!.fin_seq}, got " +
+                                    "${tcpHeader.acknowledgementNumber}",
+                        )
+                    }
+                } else {
+                    // if the ACK bit is off, drop the segment and return
+                    return@runBlocking emptyList<Packet>()
+                }
+
+                // 6th check the urg bit
+                // TOOD: might need to not return above in order to actually get. Perhaps the "stop processing" means to not continue with these steps and return
+                if (tcpHeader.isUrg()) {
+                    // This should not occur since a FIN has been received from the
+                    //            remote side.  Ignore the URG.
+                    logger.warn("Got URG packet when not expected, ignoring: $this")
+                }
+
+                // 7th: process the segment text
+                val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                if (payloadSize > 0u || payload.isNotEmpty()) {
+                    logger.warn("Payload not empty in CLOSE_WAIT state, ignoring: $this")
+                }
+
+                // 8th: check the FIN bit
+                if (tcpHeader.isFin()) {
+                    // remain in CLOSE_WAIT (or TIME_WAIT if we already transitioned)
+                    logger.debug("Got FIN packet in CLOSE_WAIT state, remaining in state: $tcpState")
+
+                    // If the FIN bit is set, signal the user "connection closing" and return any pending RECEIVEs with same message, advance RCV.NXT over the FIN, and send an acknowledgment for the FIN. Note that FIN implies PUSH for any segment text not yet delivered to the user.
+                    transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
+                    transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+            }
+            return@runBlocking emptyList()
         }
+    }
 
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-            return emptyList()
-        } else {
-            val responses = ArrayList<Packet>()
-            val ackResponse = establishedProcessAck(ipHeader, tcpHeader)
-            if (ackResponse != null) {
-                responses.add(ackResponse)
-                return responses
+    private fun handleClosingState(
+        ipHeader: IpHeader,
+        tcpHeader: TcpHeader,
+        payload: ByteArray,
+    ): List<Packet> {
+        return runBlocking {
+            tcbMutex.withLock {
+                if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
+                    logger.warn("Received unacceptable sequence number in CLOSING state, sending ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                if (tcpHeader.isRst()) {
+                    // 1)  If the RST bit is set and the sequence number is outside
+                    //             the current receive window, silently drop the segment.
+                    if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt ||
+                        tcpHeader.sequenceNumber > transmissionControlBlock!!.rcv_nxt +
+                        transmissionControlBlock!!.rcv_wnd
+                    ) {
+                        logger.warn(
+                            "Received RST in CLOSING state, but sequence number is outside of the receive window, dropping: $tcpHeader",
+                        )
+                        return@runBlocking emptyList<Packet>()
+                    }
+                    // 2)  If the RST bit is set and the sequence number exactly
+                    //             matches the next expected sequence number (RCV.NXT), then
+                    //             TCP endpoints MUST reset the connection in the manner
+                    //             prescribed below according to the connection state.
+                    //
+                    // If the RST bit is set, then any outstanding RECEIVEs and SEND should receive "reset" responses. All segment queues should be flushed. Users should also receive an unsolicited general "connection reset" signal. Enter the CLOSED state, delete the TCB, and return.
+                    if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                        logger.warn(
+                            "Received RST in CLOSING state, transitioning to CLOSED: {}",
+                            tcpHeader,
+                        )
+                        tcpState = TcpState.CLOSED
+                        isClosed = true
+                        transmissionControlBlock = null
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        retransmitQueue.clear()
+                        return@runBlocking emptyList<Packet>()
+                    }
+
+                    // 3)  If the RST bit is set and the sequence number does not
+                    //             exactly match the next expected sequence value, yet is
+                    //             within the current receive window, TCP endpoints MUST send
+                    //             an acknowledgment (challenge ACK):
+                    //
+                    //             <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                    //
+                    //             After sending the challenge ACK, TCP endpoints MUST drop
+                    //             the unacceptable segment and stop processing the incoming
+                    //             packet further.  Note that RFC 5961 and Errata ID 4772 [99]
+                    //             contain additional considerations for ACK throttling in an
+                    //             implementation.
+                    logger.warn("Received RST in CLOSING state, sending challenge ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                if (tcpHeader.isSyn()) {
+                    // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
+                    //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
+                    //   state, deleting the TCP, queues flushed.
+                    //   After ACK-ing the segment, it should be dropped, and stop processing
+                    //     further, ie no data processing. (and possibly no further processing of
+                    //       any additional segments? unclear)
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                // 5th: check ACK field
+                if (tcpHeader.isAck()) {
+                    if (isAckAcceptable(tcpHeader)) {
+                        removeAckedPacketsFromRetransmit()
+                        updateTimestamp(tcpHeader)
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        updateCongestionState()
+                        updateSendWindow(tcpHeader)
+                        updateRTO()
+                    } else {
+                        if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una) {
+                            // ignore duplicate ACKs
+                            logger.debug("Duplicate ACK received, ignoring: $tcpHeader")
+                        }
+                        if (tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt) {
+                            // acking something not yet sent: ack, drop and return
+                            logger.error("ACKing something not yet sent: $tcpHeader")
+                            // not sure if we send the ack / seq with the transmissionControlBlock values
+                            //   or the values from the incoming packet (spec is unclear)
+                            return@runBlocking listOf(
+                                TcpHeaderFactory.createAckPacket(
+                                    ipHeader,
+                                    tcpHeader,
+                                    seqNumber = transmissionControlBlock!!.snd_nxt,
+                                    ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                    transmissionControlBlock = transmissionControlBlock,
+                                ),
+                            )
+                        }
+                    }
+
+                    // In addition to the processing for the ESTABLISHED state,
+                    //               if the ACK acknowledges our FIN, then enter the TIME-WAIT
+                    //               state; otherwise, ignore the segment.
+                    if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
+                        logger.debug("Received ACK for FIN in CLOSING state, transitioning to TIME_WAIT: $tcpHeader")
+                        transmissionControlBlock!!.fin_acked = true
+                        tcpState = TcpState.TIME_WAIT
+                    } else {
+                        logger.debug(
+                            "didn't get ACK for FIN, expecting " +
+                                    "${transmissionControlBlock!!.fin_seq}, got " +
+                                    "${tcpHeader.acknowledgementNumber}, ignoring segment: $tcpHeader",
+                        )
+                    }
+                } else {
+                    // if the ACK bit is off, drop the segment and return
+                    return@runBlocking emptyList<Packet>()
+                }
+
+                // 6th check the urg bit
+                // TOOD: might need to not return above in order to actually get. Perhaps the "stop processing" means to not continue with these steps and return
+                if (tcpHeader.isUrg()) {
+                    // This should not occur since a FIN has been received from the
+                    //            remote side.  Ignore the URG.
+                    logger.warn("Got URG packet when not expected, ignoring: $this")
+                }
+
+                // 7th: process the segment text
+                val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                if (payloadSize > 0u || payload.isNotEmpty()) {
+                    logger.warn("Payload not empty in CLOSING state, ignoring: $this")
+                }
+
+                // 8th: check the FIN bit
+                if (tcpHeader.isFin()) {
+                    // remain in CLOSING
+                    logger.debug("Got FIN packet in CLOSING state, remaining in state: $tcpState")
+
+                    // If the FIN bit is set, signal the user "connection closing" and return any pending RECEIVEs with same message, advance RCV.NXT over the FIN, and send an acknowledgment for the FIN. Note that FIN implies PUSH for any segment text not yet delivered to the user.
+                    transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
+                    transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
             }
 
-            // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
-            // This acknowledgment should be piggybacked on a segment being
-            //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload)
-            if (dataAck != null) {
-                responses.add(dataAck)
-            }
-            return responses
+            return@runBlocking emptyList()
         }
     }
 
     private fun handleLastAckState(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
+        payload: ByteArray,
     ): List<Packet> {
-        val basicResponse = basicChecks(ipHeader, tcpHeader)
-        if (basicResponse != null) {
-            return listOf(basicResponse)
-        }
+        return runBlocking {
+            tcbMutex.withLock {
+                if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst()) {
+                    logger.warn("Received unacceptable sequence number in LAST_ACK state, sending ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
 
-        if (!tcpHeader.isAck()) {
-            // page 72: If the ACK bit is off, drop the segment and return.
-            logger.warn("Got non-ACK packet in $tcpState state, ignoring: $this")
-        } else {
-            // page 73:  The only thing that can arrive in this state is an
-            //          acknowledgment of our FIN.  If our FIN is now acknowledged,
-            //          delete the TCB, enter the CLOSED state, and return.
-            if (tcpHeader.acknowledgementNumber == finSeq) {
-                tcpState = TcpState.CLOSED
-                isClosed = true
-            } else {
-                logger.warn(
-                    "Expecting ACK: $finSeq but got ACK: " +
-                        "${tcpHeader.acknowledgementNumber}: $this",
-                )
+                if (tcpHeader.isRst()) {
+                    // 1)  If the RST bit is set and the sequence number is outside
+                    //             the current receive window, silently drop the segment.
+                    if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt ||
+                        tcpHeader.sequenceNumber > transmissionControlBlock!!.rcv_nxt +
+                        transmissionControlBlock!!.rcv_wnd
+                    ) {
+                        logger.warn(
+                            "Received RST in CLOSING state, but sequence number is outside of the receive window, dropping: $tcpHeader",
+                        )
+                        return@runBlocking emptyList<Packet>()
+                    }
+                    // 2)  If the RST bit is set and the sequence number exactly
+                    //             matches the next expected sequence number (RCV.NXT), then
+                    //             TCP endpoints MUST reset the connection in the manner
+                    //             prescribed below according to the connection state.
+                    //
+                    // If the RST bit is set, then any outstanding RECEIVEs and SEND should receive "reset" responses. All segment queues should be flushed. Users should also receive an unsolicited general "connection reset" signal. Enter the CLOSED state, delete the TCB, and return.
+                    if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                        logger.warn(
+                            "Received RST in CLOSING state, transitioning to CLOSED: {}",
+                            tcpHeader,
+                        )
+                        tcpState = TcpState.CLOSED
+                        isClosed = true
+                        transmissionControlBlock = null
+                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        retransmitQueue.clear()
+                        return@runBlocking emptyList<Packet>()
+                    }
+
+                    // 3)  If the RST bit is set and the sequence number does not
+                    //             exactly match the next expected sequence value, yet is
+                    //             within the current receive window, TCP endpoints MUST send
+                    //             an acknowledgment (challenge ACK):
+                    //
+                    //             <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                    //
+                    //             After sending the challenge ACK, TCP endpoints MUST drop
+                    //             the unacceptable segment and stop processing the incoming
+                    //             packet further.  Note that RFC 5961 and Errata ID 4772 [99]
+                    //             contain additional considerations for ACK throttling in an
+                    //             implementation.
+                    logger.warn("Received RST in CLOSING state, sending challenge ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                if (tcpHeader.isSyn()) {
+                    // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
+                    //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
+                    //   state, deleting the TCP, queues flushed.
+                    //   After ACK-ing the segment, it should be dropped, and stop processing
+                    //     further, ie no data processing. (and possibly no further processing of
+                    //       any additional segments? unclear)
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                // 5th: check ACK field
+                if (tcpHeader.isAck()) {
+                    // The only thing that can arrive in this state is an
+                    //               acknowledgment of our FIN.  If our FIN is now
+                    //               acknowledged, delete the TCB, enter the CLOSED state, and
+                    //               return.
+                    if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
+                        logger.debug("Received ACK for FIN in LAST_ACK state, transitioning to CLOSED: $tcpHeader")
+                        transmissionControlBlock!!.fin_acked = true
+                        tcpState = TcpState.CLOSED
+                        isClosed = true
+                        transmissionControlBlock = null
+                        retransmitQueue.clear()
+                        return@runBlocking emptyList()
+                    } else {
+                        logger.warn(
+                            "Received ACK in LAST_ACK state, expecting: " +
+                                    "${transmissionControlBlock!!.fin_seq}, " +
+                                    "got: ${tcpHeader.acknowledgementNumber}",
+                        )
+                    }
+                } else {
+                    // if the ACK bit is off, drop the segment and return
+                    return@runBlocking emptyList()
+                }
+
+                // 6th check the urg bit
+                // TOOD: might need to not return above in order to actually get. Perhaps the "stop processing" means to not continue with these steps and return
+                if (tcpHeader.isUrg()) {
+                    // This should not occur since a FIN has been received from the
+                    //            remote side.  Ignore the URG.
+                    logger.warn("Got URG packet when not expected, ignoring: $this")
+                }
+
+                // 7th: process the segment text
+                val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                if (payloadSize > 0u || payload.isNotEmpty()) {
+                    logger.warn("Payload not empty in LAST_ACK state, ignoring: $this")
+                }
+
+                // 8th: check the FIN bit
+                if (tcpHeader.isFin()) {
+                    // remain in close WAIT
+                    logger.debug("Got FIN packet in LAST_ACK state, remaining in state: $this")
+                    // If the FIN bit is set, signal the user "connection closing" and return any pending RECEIVEs with same message, advance RCV.NXT over the FIN, and send an acknowledgment for the FIN. Note that FIN implies PUSH for any segment text not yet delivered to the user.
+                    transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
+                    transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
             }
+
+            // shouldn't get here
+            return@runBlocking emptyList()
         }
-        return emptyList()
+    }
+
+    private fun handleTimeWaitState(
+        ipHeader: IpHeader,
+        tcpHeader: TcpHeader,
+        payload: ByteArray,
+    ): List<Packet> {
+        return runBlocking {
+            tcbMutex.withLock {
+                // note, this is slightly modified so that we can do a timestamp check for syn packets
+                if (!isSequenceAcceptable(ipHeader, tcpHeader) && !tcpHeader.isRst() && !tcpHeader.isSyn()) {
+                    logger.warn("Received unacceptable sequence number in TIME_WAIT state, sending ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                if (tcpHeader.isRst()) {
+                    // 1)  If the RST bit is set and the sequence number is outside
+                    //             the current receive window, silently drop the segment.
+                    if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt ||
+                        tcpHeader.sequenceNumber > transmissionControlBlock!!.rcv_nxt +
+                        transmissionControlBlock!!.rcv_wnd
+                    ) {
+                        logger.warn(
+                            "Received RST in TIME_WAIT state, but sequence number is outside of the receive window, dropping: $tcpHeader",
+                        )
+                        return@runBlocking emptyList<Packet>()
+                    }
+                    // 2)  If the RST bit is set and the sequence number exactly
+                    //             matches the next expected sequence number (RCV.NXT), then
+                    //             TCP endpoints MUST reset the connection in the manner
+                    //             prescribed below according to the connection state.
+                    //
+                    // If the RST bit is set, then any outstanding RECEIVEs and SEND should receive "reset" responses. All segment queues should be flushed. Users should also receive an unsolicited general "connection reset" signal. Enter the CLOSED state, delete the TCB, and return.
+                    if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                        logger.warn(
+                            "Received RST in TIME_WAIT state, transitioning to CLOSED: {}",
+                            tcpHeader,
+                        )
+                        tcpState = TcpState.CLOSED
+                        isClosed = true
+                        transmissionControlBlock = null
+                        retransmitQueue.clear()
+                        return@runBlocking emptyList<Packet>()
+                    }
+
+                    // 3)  If the RST bit is set and the sequence number does not
+                    //             exactly match the next expected sequence value, yet is
+                    //             within the current receive window, TCP endpoints MUST send
+                    //             an acknowledgment (challenge ACK):
+                    //
+                    //             <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                    //
+                    //             After sending the challenge ACK, TCP endpoints MUST drop
+                    //             the unacceptable segment and stop processing the incoming
+                    //             packet further.  Note that RFC 5961 and Errata ID 4772 [99]
+                    //             contain additional considerations for ACK throttling in an
+                    //             implementation.
+                    logger.warn("Received RST in TIME_WAIT state, sending challenge ACK: $tcpHeader")
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+
+                if (tcpHeader.isSyn()) {
+                    val previousTimestamp = (transmissionControlBlock?.last_timestamp?.tsval ?: 0u)
+                    val currentTimestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)?.tsval ?: 0u
+                    if (currentTimestamp > previousTimestamp) {
+                        logger.debug(
+                            "Received SYN in TIME_WAIT state with acceptable timestamp " +
+                                    "($previousTimestamp < $currentTimestamp), transitioning to " +
+                                    "SYN-RECEIVED: $tcpHeader",
+                        )
+                        if (session.channel.isOpen.not()) {
+                            logger.debug(
+                                "Channel is closed, need to re-established and handle" +
+                                        "this packet when it is connected",
+                            )
+                            // if we don't reset this here, we won't correctly enqueue a fin later
+                            session.tcpStateMachine.transmissionControlBlock!!.fin_seq = 0u
+                            // todo: see what we need to do in order to actually reset the channel
+//                            session.sessionPacketQueue.add(SessionPacket(ipHeader, tcpHeader, payload))
+//                            session.channel = session.obtainChannel()
+//                            session.initChannel()
+//                            session.socketMonitor.registerInternetSession(session)
+                            return@runBlocking emptyList<Packet>()
+                        }
+
+                        // todo: we probably want to be able to set a reduction factor here if this is running as a VPN or something
+                        //   where there are extra headers. Probably this should be set via constructor.
+                        val potentialMSS = mssOrDefault(tcpHeader, ipv4 = ipHeader is Ipv4Header)
+                        mss = min(potentialMSS.toUInt(), mtu.toUInt()).toUShort()
+                        transmissionControlBlock!!.iw = 2 * mss.toInt()
+                        transmissionControlBlock!!.cwnd = transmissionControlBlock!!.iw
+                        logger.debug("Setting MSS to: $mss")
+
+                        // todo: 3.10.7.2: if the SYN bit is set, check the security.  If the security/
+                        //         compartment on the incoming segment does not exactly match the
+                        //         security/compartment in the TCB, then send a reset and return.
+                        retransmitQueue.clear() // just to be sure we start in a fresh state
+                        transmissionControlBlock!!.rcv_nxt = tcpHeader.sequenceNumber + 1u
+                        transmissionControlBlock!!.irs = tcpHeader.sequenceNumber
+                        transmissionControlBlock!!.iss =
+                            InitialSequenceNumberGenerator.generateInitialSequenceNumber(
+                                ipHeader.sourceAddress.hostAddress,
+                                tcpHeader.sourcePort.toInt(),
+                                ipHeader.destinationAddress.hostAddress,
+                                tcpHeader.destinationPort.toInt(),
+                            )
+                        val maybeTimestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                        transmissionControlBlock!!.send_ts_ok = maybeTimestamp != null
+                        val response =
+                            TcpHeaderFactory.createSynAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                mss,
+                                transmissionControlBlock!!,
+                            )
+                        val responseTcpHeader = response.nextHeaders as TcpHeader
+                        logger.debug(
+                            "Enqueuing SYN-ACK to client with Seq:" +
+                                    " ${responseTcpHeader.sequenceNumber.toLong()}, " +
+                                    "ACK: ${responseTcpHeader.acknowledgementNumber.toLong()} " +
+                                    "${response.ipHeader} $responseTcpHeader: $this",
+                        )
+                        transmissionControlBlock!!.snd_nxt = transmissionControlBlock!!.iss + 1u
+                        transmissionControlBlock!!.snd_una = transmissionControlBlock!!.iss
+                        tcpState = TcpState.SYN_RECEIVED
+//                        session.lastTransportHeader = tcpHeader
+//                        session.lastIpHeader = ipHeader
+                        return@runBlocking listOf(response)
+                    } else {
+                        logger.debug(
+                            "Received SYN in TIME_WAIT state with unacceptable timestamp " +
+                                    "($previousTimestamp >= $currentTimestamp), sending challenge" +
+                                    "ACK: $tcpHeader",
+                        )
+                        return@runBlocking listOf(
+                            TcpHeaderFactory.createAckPacket(
+                                ipHeader,
+                                tcpHeader,
+                                seqNumber = transmissionControlBlock!!.snd_nxt,
+                                ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                transmissionControlBlock = transmissionControlBlock,
+                            ),
+                        )
+                    }
+                }
+
+                // 5th: check ACK field
+                if (tcpHeader.isAck()) {
+                    if (isAckAcceptable(tcpHeader)) {
+                        removeAckedPacketsFromRetransmit()
+                        updateTimestamp(tcpHeader)
+                        updateCongestionState()
+                        updateSendWindow(tcpHeader)
+                        updateRTO()
+//                        session.lastTransportHeader = tcpHeader
+//                        session.lastIpHeader = ipHeader
+                    } else {
+                        if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una) {
+                            // ignore duplicate ACKs
+                            logger.debug("Duplicate ACK received, ignoring: $tcpHeader")
+                        }
+                        if (tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt) {
+                            // acking something not yet sent: ack, drop and return
+                            logger.error("ACKing something not yet sent: $tcpHeader")
+                            // not sure if we send the ack / seq with the transmissionControlBlock values
+                            //   or the values from the incoming packet (spec is unclear)
+                            return@runBlocking listOf(
+                                TcpHeaderFactory.createAckPacket(
+                                    ipHeader,
+                                    tcpHeader,
+                                    seqNumber = transmissionControlBlock!!.snd_nxt,
+                                    ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                    transmissionControlBlock = transmissionControlBlock,
+                                ),
+                            )
+                        }
+                    }
+                } else {
+                    // if the ACK bit is off, drop the segment and return
+                    return@runBlocking emptyList<Packet>()
+                }
+
+                // 6th check the urg bit
+                // TOOD: might need to not return above in order to actually get. Perhaps the "stop processing" means to not continue with these steps and return
+                if (tcpHeader.isUrg()) {
+                    // This should not occur since a FIN has been received from the
+                    //            remote side.  Ignore the URG.
+                    logger.warn("Got URG packet when not expected, ignoring: $this")
+                }
+
+                // 7th: process the segment text
+                val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+                if (payloadSize > 0u || payload.isNotEmpty()) {
+                    logger.warn("Payload not empty in TIME_WAIT state, ignoring: $this")
+                }
+
+                // 8th: check the FIN bit
+                if (tcpHeader.isFin()) {
+                    // Remain in the TIME-WAIT state. Restart the 2 MSL time-wait timeout.
+                    logger.debug("Got FIN packet in TIME_WAIT state, resetting timeout, remaining in state: $this")
+                    // If the FIN bit is set, signal the user "connection closing" and return any pending RECEIVEs with same message, advance RCV.NXT over the FIN, and send an acknowledgment for the FIN. Note that FIN implies PUSH for any segment text not yet delivered to the user.
+                    transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
+//                    session.lastTransportHeader = tcpHeader
+//                    session.lastIpHeader = ipHeader
+                    transmissionControlBlock!!.time_wait_time_ms = System.currentTimeMillis()
+                    return@runBlocking listOf(
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        ),
+                    )
+                }
+            }
+
+            return@runBlocking emptyList()
+        }
     }
 
     /**
@@ -1075,10 +2195,14 @@ class TcpStateMachine(
      */
     private fun removeAckedPacketsFromRetransmit() {
         // remove all packets from the retransmit queue which have been fully acknowledged
+        // https://www.rfc-editor.org/rfc/rfc6298.html
+        // (5.3) When an ACK is received that acknowledges new data, restart the
+        //         retransmission timer so that it will expire after RTO seconds
+        //         (for the current value of RTO).
+        transmissionControlBlock!!.rto_expiry = System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000L).toLong()
         while (!retransmitQueue.isEmpty()) {
             // may be null if the session is shutting down
-            val retransmittablePacket = retransmitQueue.peek() ?: break
-            val packet = retransmittablePacket.packet
+            val packet = retransmitQueue.peek() ?: break
             val previousTcpHeader = packet.nextHeaders as TcpHeader
 
             if (tcpState == TcpState.FIN_WAIT_1 && previousTcpHeader.isFin()) {
@@ -1086,59 +2210,394 @@ class TcpStateMachine(
                 // but we have not yet received the FIN from the other side. In this case, we should
                 // not remove the FIN from the retransmit queue until we receive the FIN from the
                 // other side.
-                break
+                continue
             }
 
             if (previousTcpHeader.sequenceNumber + packet.payload.size.toUInt()
-                <= sendUnacknowledged
+                <= transmissionControlBlock!!.snd_una
             ) {
+                logger.trace(
+                    "Removing packet with seq: ${previousTcpHeader.sequenceNumber} " +
+                            "from retransmit queue, snd_una: ${transmissionControlBlock!!.snd_una}",
+                )
                 // if the queue has been removed already, // this is a no-op
-                retransmitQueue.remove(retransmittablePacket)
+                retransmitQueue.remove(packet)
             } else {
                 break
             }
+        }
+
+        // https://www.rfc-editor.org/rfc/rfc6298.html
+        // (5.2) When all outstanding data has been acknowledged, turn off the
+        //         retransmission timer.
+        if (retransmitQueue.isEmpty()) {
+            transmissionControlBlock!!.rto_expiry = 0L
         }
     }
 
     /**
+     * TODO: THIS IS ONLY ACTUALLY CALLED FROM A TEST!!! DETERMINE IF WE NEED IT, OR IF THE PROCESS TIMEOUT WILL WORK
+     *
      * Should be called periodically from a thread to determine when to retransmit unACK'd stuff.
+     *
+    fun resendTimeouts(): List<Packet> {
+    // return emptyList()
+    val retransmits = ArrayList<Packet>()
+    while (!retransmitQueue.isEmpty()) {
+    // if the session is being re-established this can be null, so stop processing if
+    // this is the case
+    val packet = retransmitQueue.peek() ?: break
+    if (packet.lastSent == 0L) {
+    logger.error("Packet has never been sent, shouldn't get here: $packet")
+    // handle edge case where we haven't sent any packets yet but are somehow in this queue
+    break
+    }
+    val now = System.currentTimeMillis()
+    if (now > packet.lastSent + packet.timeout) {
+    val tcpHeader = packet.ipNextHeader as TcpHeader
+    // Double check we haven't already received an ACK for this packet.
+    //
+    // There is a bit of an edge case for SYN packets and FIN packets because the first
+    // data packet keeps the same seq/ack as the ACK for the SYN-ACK. Similarly, the
+    // FIN packet keeps the same seq/ack as the ACK for the final data packet.
+    //
+    if (tcpHeader.sequenceNumber + packet.payload.size.toUInt() <= transmissionControlBlock!!.snd_una &&
+    (tcpState != TcpState.SYN_RECEIVED && tcpHeader.isSyn()) &&
+    (tcpState != TcpState.LAST_ACK && tcpHeader.isFin()) &&
+    (tcpState != TcpState.FIN_WAIT_1 && tcpHeader.isFin()) &&
+    (tcpState != TcpState.CLOSING && tcpHeader.isFin())
+    ) {
+    retransmitQueue.remove(packet)
+    continue
+    }
+    retransmitQueue.remove(packet)
+    retransmits.add(packet)
+    } else {
+    // assume all packets after this timeout later, not sure if true.
+    break
+    }
+    }
+    return retransmits
+    } */
+
+    private fun updateRTO() {
+        // https://www.rfc-editor.org/rfc/rfc6298.html 5.3:
+        //  (5.3) When an ACK is received that acknowledges new data, restart the
+        //         retransmission timer so that it will expire after RTO seconds
+        //         (for the current value of RTO).
+        if (transmissionControlBlock!!.rto_expiry == 0L) {
+            transmissionControlBlock!!.rto_expiry =
+                System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000).toLong()
+        }
+    }
+
+    /**
+     * This function is called when an ACK is received to update the send window size based on
+     * what was received in the ack packet. It also updates wl1 which was the sequence of the
+     * last window update, and wl2 which was the ack used for the last update.
+     *
+     * TODO: make sure this makes sense with wraparound
      */
-    fun resendTimeouts(): List<RetransmittablePacket> {
-        val retransmits = ArrayList<RetransmittablePacket>()
-        while (!retransmitQueue.isEmpty()) {
-            // if the session is being re-established this can be null, so stop processing if
-            // this is the case
-            val retransmittablePacket = retransmitQueue.peek() ?: break
-            if (retransmittablePacket.lastSent == 0L) {
-                // handle edge case where we haven't sent any packets yet
-                break
-            }
-            val now = System.currentTimeMillis()
-            if (now > retransmittablePacket.lastSent + retransmittablePacket.timeout) {
-                val packet = retransmittablePacket.packet
-                val tcpHeader = packet.nextHeaders as TcpHeader
-                // Double check we haven't already received an ACK for this packet.
-                //
-                // There is a bit of an edge case for SYN packets and FIN packets because the first
-                // data packet keeps the same seq/ack as the ACK for the SYN-ACK. Similarly, the
-                // FIN packet keeps the same seq/ack as the ACK for the final data packet.
-                //
-                if (tcpHeader.sequenceNumber + packet.payload.size.toUInt() <= sendUnacknowledged &&
-                    (tcpState != TcpState.SYN_RECEIVED && tcpHeader.isSyn()) &&
-                    (tcpState != TcpState.LAST_ACK && tcpHeader.isFin()) &&
-                    (tcpState != TcpState.FIN_WAIT_1 && tcpHeader.isFin()) &&
-                    (tcpState != TcpState.CLOSING && tcpHeader.isFin())
-                ) {
-                    retransmitQueue.remove(retransmittablePacket)
-                    continue
-                }
-                retransmitQueue.remove(retransmittablePacket)
-                retransmits.add(retransmittablePacket)
+    private fun updateSendWindow(tcpHeader: TcpHeader) {
+        // update send window
+        if (transmissionControlBlock!!.snd_wl1 < tcpHeader.sequenceNumber ||
+            (
+                    transmissionControlBlock!!.snd_wl1 == tcpHeader.sequenceNumber &&
+                            transmissionControlBlock!!.snd_wl2 <= tcpHeader.acknowledgementNumber
+                    )
+        ) {
+            transmissionControlBlock!!.snd_wnd = tcpHeader.windowSize
+            transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
+            transmissionControlBlock!!.snd_wl2 = tcpHeader.acknowledgementNumber
+        }
+    }
+
+    /**
+     * This function is called when an ACK is received to update the congestion state of the
+     * cwnd. This is based on the congestion control algorithm described in RFC 2581:
+     * https://www.rfc-editor.org/rfc/rfc2581
+     */
+    private fun updateCongestionState() {
+        if (transmissionControlBlock!!.congestionState == TcpCongestionState.SLOW_START) {
+            // During slow start, a TCP increments cwnd by at most SMSS bytes for
+            //   each ACK received that acknowledges new data.  Slow start ends when
+            //   cwnd exceeds ssthresh (or, optionally, when it reaches it, as noted
+            //   above) or when congestion is observed.
+            if (transmissionControlBlock!!.cwnd < transmissionControlBlock!!.ssthresh) {
+                transmissionControlBlock!!.cwnd += mss.toInt()
+                logger.debug("Incrementing cwnd in slow start to ${transmissionControlBlock!!.cwnd}")
             } else {
-                // assume all packets after this timeout later, not sure if true.
+                logger.debug("Transitioning to congestion avoidance")
+                transmissionControlBlock!!.congestionState = TcpCongestionState.CONGESTION_AVOIDANCE
+            }
+        } else if (transmissionControlBlock!!.congestionState == TcpCongestionState.CONGESTION_AVOIDANCE) {
+            // During congestion avoidance, cwnd is incremented by 1 full-sized
+            //   segment per round-trip time (RTT).  Congestion avoidance continues
+            //   until congestion is detected.  One formula commonly used to update
+            //   cwnd during congestion avoidance is given in equation 2:
+            // cwnd += SMSS*SMSS/cwnd
+            val incrementValue = mss.toInt() * mss.toInt() / transmissionControlBlock!!.cwnd
+            if (incrementValue == 0) {
+                // Implementation Note: Since integer arithmetic is usually used in TCP
+                //   implementations, the formula given in equation 2 can fail to increase
+                //   cwnd when the congestion window is very large (larger than
+                //   SMSS*SMSS).  If the above formula yields 0, the result SHOULD be
+                //   rounded up to 1 byte.
+                transmissionControlBlock!!.cwnd++
+            } else {
+                transmissionControlBlock!!.cwnd += incrementValue
+            }
+            logger.debug("Incrementing cwnd in congestion avoidance to ${transmissionControlBlock!!.cwnd}")
+        }
+    }
+
+    fun updateTimestamp(tcpHeader: TcpHeader) {
+        // https://www.rfc-editor.org/rfc/rfc6298.txt
+        // When a subsequent RTT measurement R' is made, a host MUST set
+        val timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+        if (timestamp != null) {
+            val ackTimestamp = timestamp.tsecr
+            val now = System.currentTimeMillis().toUInt()
+            // logger.debug("ACK TIMESTAMP: $ackTimestamp NOW: $now")
+            val R = (now.toDouble() - ackTimestamp.toDouble()) / 1000
+            transmissionControlBlock!!.rttvar = ((1 - BETA) * transmissionControlBlock!!.rttvar) + (
+                    BETA *
+                            abs(
+                                transmissionControlBlock!!.srtt - R,
+                            )
+                    )
+            transmissionControlBlock!!.srtt = ((1 - ALPHA) * transmissionControlBlock!!.srtt) + (ALPHA * R)
+            transmissionControlBlock!!.rto = max(1.0, transmissionControlBlock!!.srtt + max(G, K * transmissionControlBlock!!.rttvar))
+            // logger.debug("timer R: $R RTTVAR: ${transmissionControlBlock!!.rttvar} SRTT: ${transmissionControlBlock!!.srtt} RTO: ${transmissionControlBlock!!.rto}")
+        } else {
+            logger.warn("No timestamp option in packet, not updating timestamp")
+        }
+    }
+
+    private fun logRecvWindow(
+        ipHeader: IpHeader,
+        tcpHeader: TcpHeader,
+    ) {
+        val segmentLength = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+        logger.debug(
+            "seg.seq: ${tcpHeader.sequenceNumber} seg.length: $segmentLength " +
+                    "seg.seq + seq.length-1: ${(tcpHeader.sequenceNumber + segmentLength - 1u) % UInt.MAX_VALUE }",
+        )
+        logger.debug(
+            "rcv.wnd: ${transmissionControlBlock!!.rcv_wnd} " +
+                    "rcv.nxt: ${transmissionControlBlock!!.rcv_nxt} " +
+                    "rcv.next + rcv.wnd: ${(transmissionControlBlock!!.rcv_nxt + transmissionControlBlock!!.rcv_wnd) % UInt.MAX_VALUE} ",
+        )
+    }
+
+    private fun isSequenceAcceptable(
+        ipHeader: IpHeader,
+        tcpHeader: TcpHeader,
+    ): Boolean {
+        val segmentLength = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
+        // case 1:
+        if (segmentLength == 0u && transmissionControlBlock!!.rcv_wnd == 0u.toUShort()) {
+            if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
+                return true
+            } else {
+                logger.warn("CASE 1: not acceptable")
+                logRecvWindow(ipHeader, tcpHeader)
+                return false
+            }
+        }
+
+        // case 2:
+        if (segmentLength == 0u && transmissionControlBlock!!.rcv_wnd > 0u) {
+            // if we use longs, we can avoid the wraparound issue
+            val rcvWndEnd = transmissionControlBlock!!.rcv_nxt.toULong() + transmissionControlBlock!!.rcv_wnd.toULong()
+            if (tcpHeader.sequenceNumber >= transmissionControlBlock!!.rcv_nxt && tcpHeader.sequenceNumber < rcvWndEnd) {
+                return true
+            } else {
+                logger.warn("CASE 2: not acceptable")
+                logRecvWindow(ipHeader, tcpHeader)
+                return false
+            }
+        }
+
+        // case 3:
+        if (segmentLength > 0u && transmissionControlBlock!!.rcv_wnd == 0u.toUShort()) {
+            logger.warn("CASE 3: not acceptable")
+            logRecvWindow(ipHeader, tcpHeader)
+            return false
+        }
+
+        // case 4:
+        if (segmentLength > 0u && transmissionControlBlock!!.rcv_wnd > 0u) {
+            // if we use longs, we can avoid the wraparound issue
+            val rcvWndEnd = transmissionControlBlock!!.rcv_nxt.toULong() + transmissionControlBlock!!.rcv_wnd.toULong()
+            val segmentEnd = (tcpHeader.sequenceNumber.toULong() + segmentLength.toULong() - 1u)
+
+            // case 4a: start of segment is in window
+            if (tcpHeader.sequenceNumber >= transmissionControlBlock!!.rcv_nxt && tcpHeader.sequenceNumber < rcvWndEnd) {
+                return true
+            }
+
+            // case 4b: end of segment is in window
+            if (segmentEnd < rcvWndEnd) {
+                return true
+            }
+
+            logger.warn("CASE 4: not acceptable")
+            logRecvWindow(ipHeader, tcpHeader)
+            return false
+        }
+
+        logger.error("SHOULDN'T HAVE GOT HERE")
+        logRecvWindow(ipHeader, tcpHeader)
+        return false
+    }
+
+    /**
+     * This can't just simply check if snd.una < ack <= snd.nxt because of wraparound. This must
+     * handle the edge cases where where snd.una > snd.nxt.
+     */
+    private fun isAckAcceptable(tcpHeader: TcpHeader): Boolean {
+        if (transmissionControlBlock!!.snd_una <= transmissionControlBlock!!.snd_nxt) {
+            val result =
+                tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_una &&
+                        tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
+            if (!result) {
+                logger.debug(
+                    "snd_una: ${transmissionControlBlock!!.snd_una} ack: " +
+                            "${tcpHeader.acknowledgementNumber} snd_nxt: " +
+                            "${transmissionControlBlock!!.snd_nxt}",
+                )
+            }
+            return result
+        } else {
+            logger.debug("Wraparound case: snd_una: ${transmissionControlBlock!!.snd_una} > snd_nxt: ${transmissionControlBlock!!.snd_nxt}")
+            return tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_una ||
+                    tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
+        }
+    }
+
+    /**
+     * This will check for any packets that have timed out and need to be retransmitted.
+     */
+    fun processTimeouts(session: TcpSession): List<Packet> {
+        // When the retransmission timer expires, do the following:
+        //
+        //   (5.4) Retransmit the earliest segment that has not been acknowledged
+        //         by the TCP receiver.
+        //
+        //   (5.5) The host MUST set RTO <- RTO * 2 ("back off the timer").  The
+        //         maximum value discussed in (2.5) above may be used to provide
+        //         an upper bound to this doubling operation.
+        //
+        //   (5.6) Start the retransmission timer, such that it expires after RTO
+        //         seconds (for the value of RTO after the doubling operation
+        //         outlined in 5.5).
+        //
+        //   (5.7) If the timer expires awaiting the ACK of a SYN segment and the
+        //         TCP implementation is using an RTO less than 3 seconds, the RTO
+        //         MUST be re-initialized to 3 seconds when data transmission
+        //         begins (i.e., after the three-way handshake completes).
+        //
+        //         This represents a change from the previous version of this
+        //         document [PA00] and is discussed in Appendix A.
+        //
+        //         Note that after retransmitting, once a new RTT measurement is
+        //   obtained (which can only happen when new data has been sent and
+        //   acknowledged), the computations outlined in Section 2 are performed,
+        //   including the computation of RTO, which may result in "collapsing"
+        //   RTO back down after it has been subject to exponential back off (rule
+        //   5.5).
+        //
+        //   Note that a TCP implementation MAY clear SRTT and RTTVAR after
+        //   backing off the timer multiple times as it is likely that the current
+        //   SRTT and RTTVAR are bogus in this situation.  Once SRTT and RTTVAR
+        //   are cleared, they should be initialized with the next RTT sample
+        //   taken per (2.2) rather than using (2.3).
+        val retransmits = ArrayList<Packet>()
+        val currentTime = System.currentTimeMillis()
+        val rtoExpiry = session.tcpStateMachine.transmissionControlBlock?.rto_expiry ?: 0L
+        if (rtoExpiry == 0L) {
+            logger.error("RTO EXPIRY UNSET, can't check for packet timeouts")
+            return retransmits
+        }
+
+        if (currentTime > rtoExpiry) {
+            logger.error("RTO EXPIRY!!!!!!!!!")
+            if (session.tcpStateMachine.retransmitQueue.isNotEmpty()) {
+                session.tcpStateMachine.transmissionControlBlock!!.rto *= 2 // exponential backoff, double the RTO
+                session.tcpStateMachine.transmissionControlBlock!!.rto_expiry =
+                    currentTime +
+                            (session.tcpStateMachine.transmissionControlBlock!!.rto * 1000L).toLong()
+
+                // TODO: confirm that it is correct behavior to only retransmit the first packet
+                //   and not all packets in the outstanding queue
+
+                // don't remove from the queue, just get the first one, we only remove when
+                // we receive a positive ack
+                val retransmitPacket =
+                    session.tcpStateMachine.retransmitQueue.peek()
+                logger.warn(
+                    "RTO expiry for session $session, setting next expiry to " +
+                            "${session.tcpStateMachine.transmissionControlBlock!!.rto_expiry} " +
+                            "retransmitting packet ${retransmitPacket.nextHeaders}",
+                )
+
+                // When a TCP sender detects segment loss using the retransmission
+                //   timer, the value of ssthresh MUST be set to no more than the value
+                //   given in equation 3:
+                //
+                //      ssthresh = max (FlightSize / 2, 2*SMSS)            (3)
+                //
+                //   As discussed above, FlightSize is the amount of outstanding data in
+                //   the network.
+                //
+                //   Implementation Note: an easy mistake to make is to simply use cwnd,
+                //   rather than FlightSize, which in some implementations may
+                //   incidentally increase well beyond rwnd.
+                //
+                //   Furthermore, upon a timeout cwnd MUST be set to no more than the loss
+                //   window, LW, which equals 1 full-sized segment (regardless of the
+                //   value of IW).  Therefore, after retransmitting the dropped segment
+                //   the TCP sender uses the slow start algorithm to increase the window
+                //   from 1 full-sized segment to the new value of ssthresh, at which
+                //   point congestion avoidance again takes over.
+                session.tcpStateMachine.transmissionControlBlock!!.ssthresh =
+                    max(
+                        session.tcpStateMachine.transmissionControlBlock!!.outstandingBytes().toInt() / 2,
+                        2 * session.tcpStateMachine.mss.toInt(),
+                    )
+
+                // set cwnd to 1 full-sized segment
+                session.tcpStateMachine.transmissionControlBlock!!.cwnd = session.tcpStateMachine.mss.toInt()
+
+                retransmits.add(retransmitPacket)
+            } else {
+                logger.debug("RTO expired but no packets to retransmit")
+            }
+        } else {
+            logger.debug("RTO not expired yet, currentTime: $currentTime, rtoExpiry: $rtoExpiry")
+        }
+
+        return retransmits
+    }
+
+    /**
+     * See if we need to send an ACK that has been waiting for reverse traffic. Will remove all
+     * acks which have been waiting longer than 500ms, and return them so they may be transmitted.
+     */
+    fun checkForReverseAcks(session: TcpSession): List<Packet> {
+        val acks = ArrayList<Packet>()
+        val now = System.currentTimeMillis()
+        for (ack in session.lastestACKs) {
+            if (now - ack.timeout > 500) {
+                session.lastestACKs.remove(ack)
+                acks.add(ack.packet)
+            } else {
+                // once we reach an unexpired one, the following ones won't be either so we
+                // can stop searching.
                 break
             }
         }
-        return retransmits
+        return acks
     }
 }

@@ -15,7 +15,5 @@ class TcpClient(
     override val tcpStateMachine = TcpStateMachine(TcpState.CLOSED, mtu, this)
 
     fun connect() {
-        val initialSequenceNumber =
-        tcpStateMachine.tcpState = TcpState.SYN_SENT
     }
 }

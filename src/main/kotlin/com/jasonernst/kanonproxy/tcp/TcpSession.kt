@@ -13,6 +13,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.channels.SocketChannel
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingDeque
 
 open class TcpSession(
@@ -43,6 +44,7 @@ open class TcpSession(
         TcpOptionMaximumSegmentSize.defaultIpv6MSS
     }
     open val tcpStateMachine: TcpStateMachine = TcpStateMachine(TcpState.LISTEN, mtu, this)
+    var lastestACKs = CopyOnWriteArrayList<RetransmittablePacket>()
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
