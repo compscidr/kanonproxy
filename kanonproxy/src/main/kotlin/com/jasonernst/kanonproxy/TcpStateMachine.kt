@@ -22,9 +22,11 @@ import kotlin.jvm.javaClass
 import kotlin.ranges.until
 import kotlin.toUInt
 
+////// TODOOOOO TGHIS @WAS BAASD OFF OLD CODE, REDO
+
 /**
- * Abstracts the TCP state machine out of the InternetTcpSession so it can be used by both the
- * InternetTcpSession and the TCPLightSession. Then have each class focused on their specific
+ * Abstracts the TCP state machine out of the InternetTcpTcpSession so it can be used by both the
+ * InternetTcpTcpSession and the TCPLightTcpSession. Then have each class focused on their specific
  * directional behavior + managing channels / sockets.
  *
  * Assumes that the remote side is already connected and we are just managing the TCP session.
@@ -42,6 +44,7 @@ import kotlin.toUInt
 class TcpStateMachine(
     var tcpState: TcpState,
     val mtu: UShort,
+    val session: TcpSession
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -92,7 +95,6 @@ class TcpStateMachine(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): List<Packet> {
         logger.trace("Handling STATE: {} for session: {}", tcpState, session)
         when (tcpState) {
@@ -112,25 +114,25 @@ class TcpStateMachine(
                 )
             }
             TcpState.SYN_RECEIVED -> {
-                return handleSynReceivedState(ipHeader, tcpHeader, session)
+                return handleSynReceivedState(ipHeader, tcpHeader)
             }
             TcpState.ESTABLISHED -> {
-                return handleEstablishedState(ipHeader, tcpHeader, payload, session)
+                return handleEstablishedState(ipHeader, tcpHeader, payload)
             }
             TcpState.FIN_WAIT_1 -> {
-                return handleFinWait1State(ipHeader, tcpHeader, payload, session)
+                return handleFinWait1State(ipHeader, tcpHeader, payload)
             }
             TcpState.FIN_WAIT_2 -> {
-                return handleFinWait2State(ipHeader, tcpHeader, payload, session)
+                return handleFinWait2State(ipHeader, tcpHeader, payload)
             }
             TcpState.CLOSING -> {
-                return handleClosingState(ipHeader, tcpHeader, payload, session)
+                return handleClosingState(ipHeader, tcpHeader, payload)
             }
             TcpState.CLOSE_WAIT -> {
-                return handleCloseWaitState(ipHeader, tcpHeader, payload, session)
+                return handleCloseWaitState(ipHeader, tcpHeader, payload)
             }
             TcpState.TIME_WAIT -> {
-                return handleTimeWaitState(ipHeader, tcpHeader, payload, session)
+                return handleTimeWaitState(ipHeader, tcpHeader, payload)
             }
             TcpState.LAST_ACK -> {
                 return handleLastAckState(ipHeader, tcpHeader)
@@ -286,7 +288,6 @@ class TcpStateMachine(
     private fun handleSynReceivedState(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
-        session: Session,
     ): List<Packet> {
         // page 69, lists states which should do this check first and return and ACK and drop
         // the segment, unless the RST bit is set.
@@ -351,7 +352,7 @@ class TcpStateMachine(
                 //        enter the CLOSED state, delete the TCB, and return.
                 logger.error(
                     "Got ACK from client while in SYN_RECEIVED state, but ACK was not " +
-                        "acceptable. Enqueuing RST: $this",
+                        "acceptable. Enqueuing RST: $tcpHeader",
                 )
                 listOf(
                     TcpHeaderFactory.createRstPacket(
@@ -406,7 +407,7 @@ class TcpStateMachine(
                     true
                 } else if (tcpHeader.sequenceNumber > (UInt.Companion.MAX_VALUE - recvWindow)) {
                     /**
-                     * Rollover error was found when a tcpEchoSessionTest was created for a
+                     * Rollover error was found when a tcpEchoTcpSessionTest was created for a
                      * sequence number when
                      *      UInt.MAX_VALUE - UShort.MAX_VALUE <= Sequence Number < UInt.MAX_VALUE
                      * This occurred due to the recvWindowMax being between 0 and UShort.MAX_VALUE
@@ -602,7 +603,6 @@ class TcpStateMachine(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): Packet? {
         // todo: use the remaining recv buffer capacity to limit how much is actually accepted
         // https://linear.app/bumpapp/issue/BUMP-310/tcp-adjust-the-recv-window
@@ -612,9 +612,12 @@ class TcpStateMachine(
         // see page 74
         val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
         if (payloadSize > 0u) {
-            session.addPayloadForInternet(payload, payloadSize.toInt())
-            recvNext = recvNext + ipHeader.getPayloadLength().toUInt() -
-                tcpHeader.getHeaderLength().toUInt()
+            //session.addPayloadForInternet(payload)
+            val bytesWritten = session.channel.write(ByteBuffer.wrap(payload))
+            if (bytesWritten != payloadSize.toInt()) {
+                logger.warn("Didn't write full payload, expecting $payloadSize got $bytesWritten")
+            }
+            recvNext = recvNext + bytesWritten.toUInt() // only make an ACK for whatever we actually accepted
             if (tcpHeader.isPsh()) {
                 pshReceived = true
             }
@@ -692,7 +695,6 @@ class TcpStateMachine(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
         if (basicResponse != null) {
@@ -714,7 +716,7 @@ class TcpStateMachine(
             // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload, session)
+            val dataAck = processText(ipHeader, tcpHeader, payload)
             if (dataAck != null) {
                 responses.add(dataAck)
             }
@@ -743,14 +745,13 @@ class TcpStateMachine(
 
     /**
      * NB: whoever puts us into this state must immediately afterwards call
-     * [encapsulateSessionBuffer] which will flush the buffer and enqueue a FIN-ACK packet to
+     * [encapsulateTcpSessionBuffer] which will flush the buffer and enqueue a FIN-ACK packet to
      * the client.
      */
     private fun handleFinWait1State(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
         if (basicResponse != null) {
@@ -773,7 +774,7 @@ class TcpStateMachine(
             // https://linear.app/bumpapp/issue/BUMP-311/piggyback-ack-on-existing-data
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload, session)
+            val dataAck = processText(ipHeader, tcpHeader, payload)
             if (dataAck != null) {
                 responses.add(dataAck)
             }
@@ -813,7 +814,6 @@ class TcpStateMachine(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
         if (basicResponse != null) {
@@ -835,7 +835,7 @@ class TcpStateMachine(
             // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload, session)
+            val dataAck = processText(ipHeader, tcpHeader, payload)
             if (dataAck != null) {
                 responses.add(dataAck)
             }
@@ -869,7 +869,6 @@ class TcpStateMachine(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
         if (basicResponse != null) {
@@ -891,7 +890,7 @@ class TcpStateMachine(
             // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload, session)
+            val dataAck = processText(ipHeader, tcpHeader, payload)
             if (dataAck != null) {
                 responses.add(dataAck)
             }
@@ -908,7 +907,6 @@ class TcpStateMachine(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): List<Packet> {
         // this diverges from RFC793 in the case of TIME_WAIT so we don't have the long wait
         // before we can reuse the port. See:
@@ -1011,7 +1009,6 @@ class TcpStateMachine(
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
         payload: ByteArray,
-        session: Session,
     ): List<Packet> {
         val basicResponse = basicChecks(ipHeader, tcpHeader)
         if (basicResponse != null) {
@@ -1033,7 +1030,7 @@ class TcpStateMachine(
             // TODO: (rather than sending a separate ACK, piggyback the ACK on the data packet)
             // This acknowledgment should be piggybacked on a segment being
             //        transmitted if possible without incurring undue delay.
-            val dataAck = processText(ipHeader, tcpHeader, payload, session)
+            val dataAck = processText(ipHeader, tcpHeader, payload)
             if (dataAck != null) {
                 responses.add(dataAck)
             }

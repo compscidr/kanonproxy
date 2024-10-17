@@ -40,7 +40,8 @@ class KAnonProxy(
 
     // maps the source IP + port + protocol to a session (need extra work to handle multiple
     // clients (see the handlePackets function)
-    private val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
+    // not private for testing
+    val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
 
     /**
      * Given the list of packets that have been received, this function will
@@ -76,24 +77,23 @@ class KAnonProxy(
         }
     }
 
-    suspend fun handleTransportPacket(
+    private suspend fun handleTransportPacket(
         ipHeader: IpHeader,
         transportHeader: TransportHeader,
         payload: ByteArray,
     ) {
         var isNewSession = false
+        val key = Session.getKey(
+            ipHeader.sourceAddress,
+            transportHeader.sourcePort,
+            ipHeader.destinationAddress,
+            transportHeader.destinationPort,
+            ipHeader.protocol,
+        )
         val session =
-            sessionTableBySessionKey.getOrPut(
-                Session.getKey(
-                    ipHeader.sourceAddress,
-                    transportHeader.sourcePort,
-                    ipHeader.destinationAddress,
-                    transportHeader.destinationPort,
-                    ipHeader.protocol,
-                ),
-            ) {
+            sessionTableBySessionKey.getOrPut(key) {
                 isNewSession = true
-                Session(
+                Session.getSession(
                     ipHeader.sourceAddress,
                     transportHeader.sourcePort,
                     ipHeader.destinationAddress,
@@ -103,7 +103,7 @@ class KAnonProxy(
                 )
             }
         if (isNewSession) {
-            logger.info("New UDP session: {} with payload size: {}", session, payload.size)
+            logger.info("New session: {} with payload size: {}", session, payload.size)
         }
         when (transportHeader) {
             is UdpHeader -> {
@@ -112,16 +112,23 @@ class KAnonProxy(
                     logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
                 }
             }
-            is TcpHeader -> handTcpPacket(session, ipHeader, transportHeader)
+            is TcpHeader -> {
+                handleTcpPacket(session as TcpSession, ipHeader, transportHeader, payload)
+            }
             else -> logger.error("Unsupported transport header type: {}", transportHeader.javaClass)
         }
     }
 
-    suspend fun handTcpPacket(
-        session: Session,
+    private suspend fun handleTcpPacket(
+        session: TcpSession,
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
+        payload: ByteArray
     ) {
+        val responsePackets = session.tcpStateMachine.processHeaders(ipHeader, tcpHeader, payload)
+        for (packet in responsePackets) {
+            outgoingQueue.put(packet)
+        }
     }
 
     /**
@@ -136,7 +143,7 @@ class KAnonProxy(
      * When a failure occurs, we need to copy the original IP header + ICMP header into the payload
      * of the ICMP response.
      */
-    suspend fun handleICMPPacket(
+    private suspend fun handleICMPPacket(
         ipHeader: IpHeader,
         icmpPacket: ICMPHeader,
     ) {

@@ -2,25 +2,13 @@ package com.jasonernst.kanonproxy
 
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
-import com.jasonernst.knet.network.ip.v4.Ipv4Header
-import com.jasonernst.knet.network.ip.v6.Ipv6Header
-import com.jasonernst.knet.transport.udp.UdpHeader
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
-import java.net.Inet4Address
-import java.net.Inet6Address
 import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.StandardProtocolFamily
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
-import java.nio.channels.DatagramChannel
-import java.nio.channels.SocketChannel
 import java.util.concurrent.LinkedBlockingDeque
 
-class Session(
+abstract class Session(
     val sourceIp: InetAddress,
     val sourcePort: UShort,
     val destinationIp: InetAddress,
@@ -29,34 +17,8 @@ class Session(
     val returnQueue: LinkedBlockingDeque<Packet>,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    val channel: ByteChannel =
-        if (protocol == IpType.UDP.value) {
-            if (destinationIp is Inet4Address) {
-                DatagramChannel.open(StandardProtocolFamily.INET)
-            } else {
-                DatagramChannel.open(StandardProtocolFamily.INET6)
-            }
-        } else if (protocol == IpType.TCP.value) {
-            if (destinationIp is Inet4Address) {
-                SocketChannel.open(StandardProtocolFamily.INET)
-            } else {
-                SocketChannel.open(StandardProtocolFamily.INET6)
-            }
-        } else {
-            throw IllegalArgumentException("Unsupported protocol: $protocol")
-        }
+    abstract val channel: ByteChannel
     private val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
-
-    init {
-        CoroutineScope(Dispatchers.IO).launch {
-            if (channel is SocketChannel) {
-                channel.connect(InetSocketAddress(destinationIp, destinationPort.toInt()))
-            } else {
-                (channel as DatagramChannel).connect(InetSocketAddress(destinationIp, destinationPort.toInt()))
-            }
-            handleReturnTraffic()
-        }
-    }
 
     companion object {
         fun getKey(
@@ -66,6 +28,29 @@ class Session(
             destinationPort: UShort,
             protocol: UByte,
         ): String = "$sourceIp:$sourcePort:$destinationIp:$destinationPort:$protocol"
+
+        /**
+         * Depending on the protocol, returns either a UDP or TCP session
+         */
+        fun getSession(
+            sourceIp: InetAddress,
+            sourcePort: UShort,
+            destinationIp: InetAddress,
+            destinationPort: UShort,
+            protocol: UByte,
+            returnQueue: LinkedBlockingDeque<Packet>,
+        ): Session =
+            when (protocol) {
+                IpType.UDP.value -> {
+                    UdpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue)
+                }
+                IpType.TCP.value -> {
+                    TcpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue)
+                }
+                else -> {
+                    throw IllegalArgumentException("Unsupported protocol for session")
+                }
+            }
     }
 
     fun getKey(): String = getKey(sourceIp, sourcePort, destinationIp, destinationPort, protocol)
@@ -85,45 +70,12 @@ class Session(
                 readBuffer.flip()
                 val payload = ByteArray(len)
                 readBuffer.get(payload, 0, len)
-
-                val udpHeader = UdpHeader(destinationPort, sourcePort, len.toUShort(), 0u)
-                val ipHeader =
-                    if (sourceIp is Inet4Address) {
-                        Ipv4Header(
-                            sourceAddress = destinationIp as Inet4Address,
-                            destinationAddress = sourceIp as Inet4Address,
-                            protocol = IpType.UDP.value,
-                            totalLength =
-                                (
-                                    Ipv4Header.IP4_MIN_HEADER_LENGTH +
-                                        udpHeader.totalLength +
-                                        len.toUShort()
-                                ).toUShort(),
-                        )
-                    } else {
-                        Ipv6Header(
-                            sourceAddress = destinationIp as Inet6Address,
-                            destinationAddress = sourceIp as Inet6Address,
-                            protocol = IpType.UDP.value,
-                            payloadLength = (40u + udpHeader.totalLength).toUShort(),
-                        )
-                    }
-                val packet = Packet(ipHeader, udpHeader, payload)
-                returnQueue.put(packet)
+                handlePayloadFromInternet(payload)
                 logger.debug("Read {} bytes from {}", len, channel)
                 readBuffer.clear()
             }
         }
     }
 
-    fun addPayloadForInternet(
-        payload: ByteArray,
-        length: Int,
-    ) {
-        TODO()
-    }
-
-    fun reestablishConnection() {
-        TODO()
-    }
+    abstract fun handlePayloadFromInternet(payload: ByteArray)
 }
