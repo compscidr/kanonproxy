@@ -84,13 +84,14 @@ class KAnonProxy(
         payload: ByteArray,
     ) {
         var isNewSession = false
-        val key = Session.getKey(
-            ipHeader.sourceAddress,
-            transportHeader.sourcePort,
-            ipHeader.destinationAddress,
-            transportHeader.destinationPort,
-            ipHeader.protocol,
-        )
+        val key =
+            Session.getKey(
+                ipHeader.sourceAddress,
+                transportHeader.sourcePort,
+                ipHeader.destinationAddress,
+                transportHeader.destinationPort,
+                ipHeader.protocol,
+            )
         val session =
             sessionTableBySessionKey.getOrPut(key) {
                 isNewSession = true
@@ -124,7 +125,7 @@ class KAnonProxy(
         session: TcpSession,
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
-        payload: ByteArray
+        payload: ByteArray,
     ) {
         val responsePackets = session.tcpStateMachine.processHeaders(ipHeader, tcpHeader, payload)
         for (packet in responsePackets) {

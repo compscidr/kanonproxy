@@ -30,7 +30,6 @@ open class TcpSession(
         protocol = IpType.TCP.value,
         returnQueue = returnQueue,
     ) {
-
     private val logger = LoggerFactory.getLogger(javaClass)
     override val channel: SocketChannel =
         if (destinationIp is Inet4Address) {
@@ -38,11 +37,12 @@ open class TcpSession(
         } else {
             SocketChannel.open(StandardProtocolFamily.INET6)
         }
-    protected val mtu = if (destinationIp is Inet4Address) {
-        TcpOptionMaximumSegmentSize.defaultIpv4MSS
-    } else {
-        TcpOptionMaximumSegmentSize.defaultIpv6MSS
-    }
+    protected val mtu =
+        if (destinationIp is Inet4Address) {
+            TcpOptionMaximumSegmentSize.defaultIpv4MSS
+        } else {
+            TcpOptionMaximumSegmentSize.defaultIpv6MSS
+        }
     open val tcpStateMachine: TcpStateMachine = TcpStateMachine(TcpState.LISTEN, mtu, this)
     var lastestACKs = CopyOnWriteArrayList<RetransmittablePacket>()
 

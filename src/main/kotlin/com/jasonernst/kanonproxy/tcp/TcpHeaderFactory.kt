@@ -164,7 +164,7 @@ object TcpHeaderFactory {
         ackNumber: UInt,
         payload: ByteBuffer = ByteBuffer.allocate(0),
         isPsh: Boolean = false,
-        transmissionControlBlock: TransmissionControlBlock?
+        transmissionControlBlock: TransmissionControlBlock?,
     ): Packet =
         prepareResponseHeaders(
             ipHeader,
@@ -194,7 +194,7 @@ object TcpHeaderFactory {
             ackNumber,
             isFin = true,
             isAck = true,
-            transmissionControlBlock = transmissionControlBlock
+            transmissionControlBlock = transmissionControlBlock,
         )
 
     /**
@@ -238,7 +238,7 @@ object TcpHeaderFactory {
             ackNumber,
             swapSourceAndDestination = true,
             isRst = true,
-            transmissionControlBlock = transmissionControlBlock
+            transmissionControlBlock = transmissionControlBlock,
         )
     }
 

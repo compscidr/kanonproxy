@@ -10,8 +10,18 @@ import java.util.concurrent.LinkedBlockingDeque
  * Can also send a data stream and receive one.
  */
 class TcpClient(
-    sourceAddress: InetAddress, destinationAddress: InetAddress, sourcePort: UShort, destinationPort: UShort, outgoingQueue: LinkedBlockingDeque<Packet>
-): TcpSession(sourceIp = sourceAddress, sourcePort = sourcePort, destinationIp = destinationAddress, destinationPort = destinationPort, outgoingQueue) {
+    sourceAddress: InetAddress,
+    destinationAddress: InetAddress,
+    sourcePort: UShort,
+    destinationPort: UShort,
+    outgoingQueue: LinkedBlockingDeque<Packet>,
+) : TcpSession(
+        sourceIp = sourceAddress,
+        sourcePort = sourcePort,
+        destinationIp = destinationAddress,
+        destinationPort = destinationPort,
+        outgoingQueue,
+    ) {
     override val tcpStateMachine = TcpStateMachine(TcpState.CLOSED, mtu, this)
 
     fun connect() {

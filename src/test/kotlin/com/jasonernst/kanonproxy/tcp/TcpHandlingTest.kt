@@ -2,24 +2,19 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.icmp_linux.ICMPLinux
 import com.jasonernst.kanonproxy.KAnonProxy
-import com.jasonernst.kanonproxy.Session
-import com.jasonernst.knet.network.ip.IpType
-import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.testservers.server.TcpEchoServer
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
+import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertTrue
-import org.slf4j.LoggerFactory
 
 @Timeout(20)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
+
     companion object {
         val tcpEchoServer = TcpEchoServer()
 
@@ -36,7 +31,15 @@ class TcpHandlingTest {
         }
     }
 
-    fun handshake(sourceAddress: InetAddress, destinationAddress: InetAddress, sourcePort: UShort, destinationPort: UShort, startingSequence: UInt, mss: UShort, kAnonProxy: KAnonProxy) {
+    fun handshake(
+        sourceAddress: InetAddress,
+        destinationAddress: InetAddress,
+        sourcePort: UShort,
+        destinationPort: UShort,
+        startingSequence: UInt,
+        mss: UShort,
+        kAnonProxy: KAnonProxy,
+    ) {
 //        val sessionKey = Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.TCP.value)
 //        logger.debug("Handshake for session: $sessionKey")
 //        assertFalse(kAnonProxy.sessionTableBySessionKey.contains(sessionKey))

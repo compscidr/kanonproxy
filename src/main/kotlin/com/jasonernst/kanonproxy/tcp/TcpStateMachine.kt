@@ -7,17 +7,17 @@ import com.jasonernst.knet.transport.tcp.InitialSequenceNumberGenerator
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize.Companion.mssOrDefault
 import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
-import java.nio.ByteBuffer
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.jvm.javaClass
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.toUInt
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /**
  * Abstracts the TCP state machine out of the InternetTcpTcpSession so it can be used by both the
@@ -382,9 +382,9 @@ class TcpStateMachine(
                     val responseTcpHeader = response.nextHeaders as TcpHeader
                     logger.debug(
                         "Enqueuing SYN-ACK to client with Seq:" +
-                                " ${responseTcpHeader.sequenceNumber.toLong()}, " +
-                                "ACK: ${responseTcpHeader.acknowledgementNumber.toLong()} " +
-                                "${response.ipHeader} $responseTcpHeader",
+                            " ${responseTcpHeader.sequenceNumber.toLong()}, " +
+                            "ACK: ${responseTcpHeader.acknowledgementNumber.toLong()} " +
+                            "${response.ipHeader} $responseTcpHeader",
                     )
                     transmissionControlBlock!!.snd_nxt = transmissionControlBlock!!.iss + 1u
                     transmissionControlBlock!!.snd_una = transmissionControlBlock!!.iss
@@ -464,10 +464,10 @@ class TcpStateMachine(
                     ) {
                         logger.warn(
                             "Received unacceptable ACK outside of ISS and SND_NEXT in SYN_SENT " +
-                                    "state, sending RST, discarding segment and returning. ACK: " +
-                                    "${tcpHeader.acknowledgementNumber}, " +
-                                    "ISS: ${transmissionControlBlock!!.iss}, " +
-                                    "SND.NXT: ${transmissionControlBlock!!.snd_nxt}",
+                                "state, sending RST, discarding segment and returning. ACK: " +
+                                "${tcpHeader.acknowledgementNumber}, " +
+                                "ISS: ${transmissionControlBlock!!.iss}, " +
+                                "SND.NXT: ${transmissionControlBlock!!.snd_nxt}",
                         )
                         return@runBlocking listOf(
                             TcpHeaderFactory.createRstPacket(
@@ -487,10 +487,10 @@ class TcpStateMachine(
                     ) {
                         logger.warn(
                             "ACK outside of SND.UNA < SEG.ACK =< SND.NXT in SYN_SENT state, " +
-                                    "sending RST, discarding segment and returning. " +
-                                    "ACK: ${tcpHeader.acknowledgementNumber}, " +
-                                    "SND.UNA: ${transmissionControlBlock!!.snd_una}, " +
-                                    "SND.NXT: ${transmissionControlBlock!!.snd_nxt}",
+                                "sending RST, discarding segment and returning. " +
+                                "ACK: ${tcpHeader.acknowledgementNumber}, " +
+                                "SND.UNA: ${transmissionControlBlock!!.snd_una}, " +
+                                "SND.NXT: ${transmissionControlBlock!!.snd_nxt}",
                         )
                         return@runBlocking listOf(
                             TcpHeaderFactory.createRstPacket(
@@ -698,15 +698,14 @@ class TcpStateMachine(
                                 val synAckTimestamp = timestamp.tsecr
                                 val now = System.currentTimeMillis().toUInt()
                                 // logger.debug("SYN ACK TIMESTAMP: $synAckTimestamp, NOW: $now")
-                                val R = (now - synAckTimestamp).toDouble() / 1000
-                                transmissionControlBlock!!.srtt = R
-                                transmissionControlBlock!!.rttvar = R / 2.0
+                                val r = (now - synAckTimestamp).toDouble() / 1000
+                                transmissionControlBlock!!.srtt = r
+                                transmissionControlBlock!!.rttvar = r / 2.0
                                 transmissionControlBlock!!.rto =
                                     max(
                                         1.0,
                                         transmissionControlBlock!!.srtt + max(G, K * transmissionControlBlock!!.rttvar),
                                     )
-                                // logger.debug("R: $R, SRTT: ${transmissionControlBlock!!.srtt}, RTTVAR: ${transmissionControlBlock!!.rttvar}, RTO: ${transmissionControlBlock!!.rto}")
                             }
 
                             // 6th check the urg bit
@@ -726,7 +725,7 @@ class TcpStateMachine(
                             val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                             assert(payloadSize == payload.size.toUInt())
                             if (payload.isNotEmpty()) {
-                                //session.addPayloadForInternet(payload, payload.size)
+                                // session.addPayloadForInternet(payload, payload.size)
                                 session.channel.write(ByteBuffer.wrap(payload))
                                 val ack =
                                     TcpHeaderFactory.createAckPacket(
@@ -767,8 +766,8 @@ class TcpStateMachine(
                             val upperBound = transmissionControlBlock!!.snd_nxt
                             logger.error(
                                 "Received unacceptable ACK in SYN_RECEIVED state expecting " +
-                                        "($lowerBound, $upperBound), have " +
-                                        "${tcpHeader.acknowledgementNumber}, sending RST",
+                                    "($lowerBound, $upperBound), have " +
+                                    "${tcpHeader.acknowledgementNumber}, sending RST",
                             )
                             return@runBlocking listOf(
                                 TcpHeaderFactory.createRstPacket(
@@ -830,7 +829,7 @@ class TcpStateMachine(
                         ) {
                             logger.warn(
                                 "Received RST in ESTABLISHED state, but sequence number is " +
-                                        "outside of the receive window, dropping: $tcpHeader",
+                                    "outside of the receive window, dropping: $tcpHeader",
                             )
                             return@runBlocking emptyList<Packet>()
                         }
@@ -958,7 +957,7 @@ class TcpStateMachine(
                     val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
-                        //session.addPayloadForInternet(payload, payload.size)
+                        // session.addPayloadForInternet(payload, payload.size)
                         session.channel.write(ByteBuffer.wrap(payload))
                         val ack =
                             TcpHeaderFactory.createAckPacket(
@@ -971,9 +970,9 @@ class TcpStateMachine(
                         if (tcpHeader.isPsh()) {
                             logger.debug(
                                 "Received PSH in ESTABLISHED state, sending ACK " +
-                                        "immediately SEQ: " +
-                                        "${(ack.nextHeaders as TcpHeader).sequenceNumber} ACK: " +
-                                        "${(ack.nextHeaders as TcpHeader).acknowledgementNumber}",
+                                    "immediately SEQ: " +
+                                    "${(ack.nextHeaders as TcpHeader).sequenceNumber} ACK: " +
+                                    "${(ack.nextHeaders as TcpHeader).acknowledgementNumber}",
                             )
                         }
                         val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
@@ -1047,7 +1046,7 @@ class TcpStateMachine(
                         ) {
                             logger.warn(
                                 "Received RST in FIN_WAIT1 state, but sequence number is outside " +
-                                        "of the receive window, dropping: $tcpHeader",
+                                    "of the receive window, dropping: $tcpHeader",
                             )
                             return@runBlocking emptyList<Packet>()
                         }
@@ -1159,8 +1158,8 @@ class TcpStateMachine(
                         } else {
                             logger.debug(
                                 "didn't get ACK for FIN, expecting " +
-                                        "${transmissionControlBlock!!.fin_seq}, got " +
-                                        "${tcpHeader.acknowledgementNumber}",
+                                    "${transmissionControlBlock!!.fin_seq}, got " +
+                                    "${tcpHeader.acknowledgementNumber}",
                             )
                         }
                     } else {
@@ -1186,7 +1185,7 @@ class TcpStateMachine(
                     val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
-                        //session.addPayloadForInternet(payload, payload.size)
+                        // session.addPayloadForInternet(payload, payload.size)
                         session.channel.write(ByteBuffer.wrap(payload))
                         val ack =
                             TcpHeaderFactory.createAckPacket(
@@ -1398,15 +1397,16 @@ class TcpStateMachine(
                 val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                 assert(payloadSize == payload.size.toUInt())
                 if (payload.isNotEmpty()) {
-                    //session.addPayloadForInternet(payload, payload.size)
+                    // session.addPayloadForInternet(payload, payload.size)
                     session.channel.write(ByteBuffer.wrap(payload))
-                    val ack = TcpHeaderFactory.createAckPacket(
-                        ipHeader,
-                        tcpHeader,
-                        seqNumber = transmissionControlBlock!!.snd_nxt,
-                        ackNumber = transmissionControlBlock!!.rcv_nxt,
-                        transmissionControlBlock = transmissionControlBlock
-                    )
+                    val ack =
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader,
+                            tcpHeader,
+                            seqNumber = transmissionControlBlock!!.snd_nxt,
+                            ackNumber = transmissionControlBlock!!.rcv_nxt,
+                            transmissionControlBlock = transmissionControlBlock,
+                        )
                     val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
                     session.lastestACKs.add(retransmittablePacket)
                 }
@@ -1568,8 +1568,8 @@ class TcpStateMachine(
                     } else {
                         logger.debug(
                             "didn't get ACK for FIN, expecting " +
-                                    "${transmissionControlBlock!!.fin_seq}, got " +
-                                    "${tcpHeader.acknowledgementNumber}",
+                                "${transmissionControlBlock!!.fin_seq}, got " +
+                                "${tcpHeader.acknowledgementNumber}",
                         )
                     }
                 } else {
@@ -1748,8 +1748,8 @@ class TcpStateMachine(
                     } else {
                         logger.debug(
                             "didn't get ACK for FIN, expecting " +
-                                    "${transmissionControlBlock!!.fin_seq}, got " +
-                                    "${tcpHeader.acknowledgementNumber}, ignoring segment: $tcpHeader",
+                                "${transmissionControlBlock!!.fin_seq}, got " +
+                                "${tcpHeader.acknowledgementNumber}, ignoring segment: $tcpHeader",
                         )
                     }
                 } else {
@@ -1905,8 +1905,8 @@ class TcpStateMachine(
                     } else {
                         logger.warn(
                             "Received ACK in LAST_ACK state, expecting: " +
-                                    "${transmissionControlBlock!!.fin_seq}, " +
-                                    "got: ${tcpHeader.acknowledgementNumber}",
+                                "${transmissionControlBlock!!.fin_seq}, " +
+                                "got: ${tcpHeader.acknowledgementNumber}",
                         )
                     }
                 } else {
@@ -2033,13 +2033,13 @@ class TcpStateMachine(
                     if (currentTimestamp > previousTimestamp) {
                         logger.debug(
                             "Received SYN in TIME_WAIT state with acceptable timestamp " +
-                                    "($previousTimestamp < $currentTimestamp), transitioning to " +
-                                    "SYN-RECEIVED: $tcpHeader",
+                                "($previousTimestamp < $currentTimestamp), transitioning to " +
+                                "SYN-RECEIVED: $tcpHeader",
                         )
                         if (session.channel.isOpen.not()) {
                             logger.debug(
                                 "Channel is closed, need to re-established and handle" +
-                                        "this packet when it is connected",
+                                    "this packet when it is connected",
                             )
                             // if we don't reset this here, we won't correctly enqueue a fin later
                             session.tcpStateMachine.transmissionControlBlock!!.fin_seq = 0u
@@ -2084,9 +2084,9 @@ class TcpStateMachine(
                         val responseTcpHeader = response.nextHeaders as TcpHeader
                         logger.debug(
                             "Enqueuing SYN-ACK to client with Seq:" +
-                                    " ${responseTcpHeader.sequenceNumber.toLong()}, " +
-                                    "ACK: ${responseTcpHeader.acknowledgementNumber.toLong()} " +
-                                    "${response.ipHeader} $responseTcpHeader: $this",
+                                " ${responseTcpHeader.sequenceNumber.toLong()}, " +
+                                "ACK: ${responseTcpHeader.acknowledgementNumber.toLong()} " +
+                                "${response.ipHeader} $responseTcpHeader: $this",
                         )
                         transmissionControlBlock!!.snd_nxt = transmissionControlBlock!!.iss + 1u
                         transmissionControlBlock!!.snd_una = transmissionControlBlock!!.iss
@@ -2097,8 +2097,8 @@ class TcpStateMachine(
                     } else {
                         logger.debug(
                             "Received SYN in TIME_WAIT state with unacceptable timestamp " +
-                                    "($previousTimestamp >= $currentTimestamp), sending challenge" +
-                                    "ACK: $tcpHeader",
+                                "($previousTimestamp >= $currentTimestamp), sending challenge" +
+                                "ACK: $tcpHeader",
                         )
                         return@runBlocking listOf(
                             TcpHeaderFactory.createAckPacket(
@@ -2218,7 +2218,7 @@ class TcpStateMachine(
             ) {
                 logger.trace(
                     "Removing packet with seq: ${previousTcpHeader.sequenceNumber} " +
-                            "from retransmit queue, snd_una: ${transmissionControlBlock!!.snd_una}",
+                        "from retransmit queue, snd_una: ${transmissionControlBlock!!.snd_una}",
                 )
                 // if the queue has been removed already, // this is a no-op
                 retransmitQueue.remove(packet)
@@ -2240,45 +2240,45 @@ class TcpStateMachine(
      *
      * Should be called periodically from a thread to determine when to retransmit unACK'd stuff.
      *
-    fun resendTimeouts(): List<Packet> {
-    // return emptyList()
-    val retransmits = ArrayList<Packet>()
-    while (!retransmitQueue.isEmpty()) {
-    // if the session is being re-established this can be null, so stop processing if
-    // this is the case
-    val packet = retransmitQueue.peek() ?: break
-    if (packet.lastSent == 0L) {
-    logger.error("Packet has never been sent, shouldn't get here: $packet")
-    // handle edge case where we haven't sent any packets yet but are somehow in this queue
-    break
-    }
-    val now = System.currentTimeMillis()
-    if (now > packet.lastSent + packet.timeout) {
-    val tcpHeader = packet.ipNextHeader as TcpHeader
-    // Double check we haven't already received an ACK for this packet.
-    //
-    // There is a bit of an edge case for SYN packets and FIN packets because the first
-    // data packet keeps the same seq/ack as the ACK for the SYN-ACK. Similarly, the
-    // FIN packet keeps the same seq/ack as the ACK for the final data packet.
-    //
-    if (tcpHeader.sequenceNumber + packet.payload.size.toUInt() <= transmissionControlBlock!!.snd_una &&
-    (tcpState != TcpState.SYN_RECEIVED && tcpHeader.isSyn()) &&
-    (tcpState != TcpState.LAST_ACK && tcpHeader.isFin()) &&
-    (tcpState != TcpState.FIN_WAIT_1 && tcpHeader.isFin()) &&
-    (tcpState != TcpState.CLOSING && tcpHeader.isFin())
-    ) {
-    retransmitQueue.remove(packet)
-    continue
-    }
-    retransmitQueue.remove(packet)
-    retransmits.add(packet)
-    } else {
-    // assume all packets after this timeout later, not sure if true.
-    break
-    }
-    }
-    return retransmits
-    } */
+     fun resendTimeouts(): List<Packet> {
+     // return emptyList()
+     val retransmits = ArrayList<Packet>()
+     while (!retransmitQueue.isEmpty()) {
+     // if the session is being re-established this can be null, so stop processing if
+     // this is the case
+     val packet = retransmitQueue.peek() ?: break
+     if (packet.lastSent == 0L) {
+     logger.error("Packet has never been sent, shouldn't get here: $packet")
+     // handle edge case where we haven't sent any packets yet but are somehow in this queue
+     break
+     }
+     val now = System.currentTimeMillis()
+     if (now > packet.lastSent + packet.timeout) {
+     val tcpHeader = packet.ipNextHeader as TcpHeader
+     // Double check we haven't already received an ACK for this packet.
+     //
+     // There is a bit of an edge case for SYN packets and FIN packets because the first
+     // data packet keeps the same seq/ack as the ACK for the SYN-ACK. Similarly, the
+     // FIN packet keeps the same seq/ack as the ACK for the final data packet.
+     //
+     if (tcpHeader.sequenceNumber + packet.payload.size.toUInt() <= transmissionControlBlock!!.snd_una &&
+     (tcpState != TcpState.SYN_RECEIVED && tcpHeader.isSyn()) &&
+     (tcpState != TcpState.LAST_ACK && tcpHeader.isFin()) &&
+     (tcpState != TcpState.FIN_WAIT_1 && tcpHeader.isFin()) &&
+     (tcpState != TcpState.CLOSING && tcpHeader.isFin())
+     ) {
+     retransmitQueue.remove(packet)
+     continue
+     }
+     retransmitQueue.remove(packet)
+     retransmits.add(packet)
+     } else {
+     // assume all packets after this timeout later, not sure if true.
+     break
+     }
+     }
+     return retransmits
+     } */
 
     private fun updateRTO() {
         // https://www.rfc-editor.org/rfc/rfc6298.html 5.3:
@@ -2302,9 +2302,9 @@ class TcpStateMachine(
         // update send window
         if (transmissionControlBlock!!.snd_wl1 < tcpHeader.sequenceNumber ||
             (
-                    transmissionControlBlock!!.snd_wl1 == tcpHeader.sequenceNumber &&
-                            transmissionControlBlock!!.snd_wl2 <= tcpHeader.acknowledgementNumber
-                    )
+                transmissionControlBlock!!.snd_wl1 == tcpHeader.sequenceNumber &&
+                    transmissionControlBlock!!.snd_wl2 <= tcpHeader.acknowledgementNumber
+            )
         ) {
             transmissionControlBlock!!.snd_wnd = tcpHeader.windowSize
             transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
@@ -2359,14 +2359,14 @@ class TcpStateMachine(
             val ackTimestamp = timestamp.tsecr
             val now = System.currentTimeMillis().toUInt()
             // logger.debug("ACK TIMESTAMP: $ackTimestamp NOW: $now")
-            val R = (now.toDouble() - ackTimestamp.toDouble()) / 1000
+            val r = (now.toDouble() - ackTimestamp.toDouble()) / 1000
             transmissionControlBlock!!.rttvar = ((1 - BETA) * transmissionControlBlock!!.rttvar) + (
-                    BETA *
-                            abs(
-                                transmissionControlBlock!!.srtt - R,
-                            )
+                BETA *
+                    abs(
+                        transmissionControlBlock!!.srtt - r,
                     )
-            transmissionControlBlock!!.srtt = ((1 - ALPHA) * transmissionControlBlock!!.srtt) + (ALPHA * R)
+            )
+            transmissionControlBlock!!.srtt = ((1 - ALPHA) * transmissionControlBlock!!.srtt) + (ALPHA * r)
             transmissionControlBlock!!.rto = max(1.0, transmissionControlBlock!!.srtt + max(G, K * transmissionControlBlock!!.rttvar))
             // logger.debug("timer R: $R RTTVAR: ${transmissionControlBlock!!.rttvar} SRTT: ${transmissionControlBlock!!.srtt} RTO: ${transmissionControlBlock!!.rto}")
         } else {
@@ -2381,12 +2381,12 @@ class TcpStateMachine(
         val segmentLength = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
         logger.debug(
             "seg.seq: ${tcpHeader.sequenceNumber} seg.length: $segmentLength " +
-                    "seg.seq + seq.length-1: ${(tcpHeader.sequenceNumber + segmentLength - 1u) % UInt.MAX_VALUE }",
+                "seg.seq + seq.length-1: ${(tcpHeader.sequenceNumber + segmentLength - 1u) % UInt.MAX_VALUE }",
         )
         logger.debug(
             "rcv.wnd: ${transmissionControlBlock!!.rcv_wnd} " +
-                    "rcv.nxt: ${transmissionControlBlock!!.rcv_nxt} " +
-                    "rcv.next + rcv.wnd: ${(transmissionControlBlock!!.rcv_nxt + transmissionControlBlock!!.rcv_wnd) % UInt.MAX_VALUE} ",
+                "rcv.nxt: ${transmissionControlBlock!!.rcv_nxt} " +
+                "rcv.next + rcv.wnd: ${(transmissionControlBlock!!.rcv_nxt + transmissionControlBlock!!.rcv_wnd) % UInt.MAX_VALUE} ",
         )
     }
 
@@ -2460,19 +2460,19 @@ class TcpStateMachine(
         if (transmissionControlBlock!!.snd_una <= transmissionControlBlock!!.snd_nxt) {
             val result =
                 tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_una &&
-                        tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
+                    tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
             if (!result) {
                 logger.debug(
                     "snd_una: ${transmissionControlBlock!!.snd_una} ack: " +
-                            "${tcpHeader.acknowledgementNumber} snd_nxt: " +
-                            "${transmissionControlBlock!!.snd_nxt}",
+                        "${tcpHeader.acknowledgementNumber} snd_nxt: " +
+                        "${transmissionControlBlock!!.snd_nxt}",
                 )
             }
             return result
         } else {
             logger.debug("Wraparound case: snd_una: ${transmissionControlBlock!!.snd_una} > snd_nxt: ${transmissionControlBlock!!.snd_nxt}")
             return tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_una ||
-                    tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
+                tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
         }
     }
 
@@ -2527,7 +2527,7 @@ class TcpStateMachine(
                 session.tcpStateMachine.transmissionControlBlock!!.rto *= 2 // exponential backoff, double the RTO
                 session.tcpStateMachine.transmissionControlBlock!!.rto_expiry =
                     currentTime +
-                            (session.tcpStateMachine.transmissionControlBlock!!.rto * 1000L).toLong()
+                    (session.tcpStateMachine.transmissionControlBlock!!.rto * 1000L).toLong()
 
                 // TODO: confirm that it is correct behavior to only retransmit the first packet
                 //   and not all packets in the outstanding queue
@@ -2538,8 +2538,8 @@ class TcpStateMachine(
                     session.tcpStateMachine.retransmitQueue.peek()
                 logger.warn(
                     "RTO expiry for session $session, setting next expiry to " +
-                            "${session.tcpStateMachine.transmissionControlBlock!!.rto_expiry} " +
-                            "retransmitting packet ${retransmitPacket.nextHeaders}",
+                        "${session.tcpStateMachine.transmissionControlBlock!!.rto_expiry} " +
+                        "retransmitting packet ${retransmitPacket.nextHeaders}",
                 )
 
                 // When a TCP sender detects segment loss using the retransmission
@@ -2563,7 +2563,9 @@ class TcpStateMachine(
                 //   point congestion avoidance again takes over.
                 session.tcpStateMachine.transmissionControlBlock!!.ssthresh =
                     max(
-                        session.tcpStateMachine.transmissionControlBlock!!.outstandingBytes().toInt() / 2,
+                        session.tcpStateMachine.transmissionControlBlock!!
+                            .outstandingBytes()
+                            .toInt() / 2,
                         2 * session.tcpStateMachine.mss.toInt(),
                     )
 

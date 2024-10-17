@@ -65,16 +65,15 @@ data class TransmissionControlBlock(
     // SACK
     var sack_permitted: Boolean = false,
     // last acceptable packets timestamp
-    var last_timestamp: TcpOptionTimestamp? = null
+    var last_timestamp: TcpOptionTimestamp? = null,
 ) {
     /**
      * Returns the difference between snd_una and snd_next while accounting for wraparound
      */
-    fun outstandingBytes(): UInt {
-        return if (snd_nxt >= snd_una) {
+    fun outstandingBytes(): UInt =
+        if (snd_nxt >= snd_una) {
             snd_nxt - snd_una
         } else {
             (UInt.MAX_VALUE - snd_una) + snd_nxt
         }
-    }
 }
