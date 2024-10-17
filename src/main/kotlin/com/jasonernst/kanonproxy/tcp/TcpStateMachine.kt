@@ -1,9 +1,9 @@
-package com.jasonernst.kanonproxy
+package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.icmp_common.PacketHeaderException
 import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachableCodes
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
-import com.jasonernst.kanonproxy.IcmpFactory.createDestinationUnreachable
+import com.jasonernst.kanonproxy.icmp.IcmpFactory.createDestinationUnreachable
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.v4.Ipv4Header

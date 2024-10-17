@@ -1,5 +1,7 @@
 package com.jasonernst.kanonproxy
 
+import com.jasonernst.kanonproxy.tcp.TcpSession
+import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
 import org.slf4j.LoggerFactory

@@ -1,4 +1,4 @@
-package com.jasonernst.kanonproxy
+package com.jasonernst.kanonproxy.icmp
 
 import com.jasonernst.icmp_common.ICMPType
 import com.jasonernst.icmp_common.PacketHeaderException

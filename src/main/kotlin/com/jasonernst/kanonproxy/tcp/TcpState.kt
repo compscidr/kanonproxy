@@ -1,4 +1,4 @@
-package com.jasonernst.kanonproxy
+package com.jasonernst.kanonproxy.tcp
 
 /**
  * See page 21, series of states for connection lifetime:

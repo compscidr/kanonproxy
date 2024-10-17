@@ -1,5 +1,6 @@
-package com.jasonernst.kanonproxy
+package com.jasonernst.kanonproxy.tcp
 
+import com.jasonernst.kanonproxy.Session
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize

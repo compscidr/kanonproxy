@@ -9,6 +9,7 @@ import com.jasonernst.icmp_common.v4.ICMPv4EchoPacket
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
+import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.v4.Ipv4Header

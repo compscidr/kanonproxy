@@ -1,6 +1,8 @@
-package com.jasonernst.kanonproxy
+package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.icmp_linux.ICMPLinux
+import com.jasonernst.kanonproxy.KAnonProxy
+import com.jasonernst.kanonproxy.Session
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.TcpHeaderFactory
@@ -36,7 +38,8 @@ class TcpHandlingTest {
     }
 
     fun handshake(sourceAddress: InetAddress, destinationAddress: InetAddress, sourcePort: UShort, destinationPort: UShort, startingSequence: UInt, mss: UShort, kAnonProxy: KAnonProxy) {
-        val sessionKey = Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.TCP.value)
+        val sessionKey =
+            Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.TCP.value)
         logger.debug("Handshake for session: $sessionKey")
         assertFalse(kAnonProxy.sessionTableBySessionKey.contains(sessionKey))
         val synPacket =

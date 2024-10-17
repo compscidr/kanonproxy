@@ -1,4 +1,4 @@
-package com.jasonernst.kanonproxy
+package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.knet.Packet
 

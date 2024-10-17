@@ -1,8 +1,9 @@
-package com.jasonernst.kanonproxy
+package com.jasonernst.kanonproxy.icmp
 
 import com.jasonernst.icmp_common.v4.ICMPv4EchoPacket
 import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
 import com.jasonernst.icmp_linux.ICMPLinux
+import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
