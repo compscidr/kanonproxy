@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.slf4j.LoggerFactory
+import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 
 @Timeout(20)
@@ -19,8 +21,8 @@ class IcmpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     @Test fun testIcmpV4PacketHandling() {
-        val sourceAddress = InetAddress.getByName("127.0.0.1")
-        val destinationAddress = InetAddress.getByName("127.0.0.1")
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val icmpV4EchoPacket = ICMPv4EchoPacket(0u, 1u, 1u, false, "Test Data".toByteArray())
         icmpV4EchoPacket.checksum = icmpV4EchoPacket.computeChecksum(sourceAddress, destinationAddress)
         val ipv4Header =
@@ -55,8 +57,8 @@ class IcmpHandlingTest {
     }
 
     @Test fun testIcmpV6PacketHandling() {
-        val sourceAddress = InetAddress.getByName("::1")
-        val destinationAddress = InetAddress.getByName("::1")
+        val sourceAddress = InetAddress.getByName("::1") as Inet6Address
+        val destinationAddress = InetAddress.getByName("::1") as Inet6Address
         val icmpV6EchoPacket = ICMPv6EchoPacket(0u, 1u, 1u, false, "Test Data".toByteArray())
         icmpV6EchoPacket.checksum = icmpV6EchoPacket.computeChecksum(sourceAddress, destinationAddress)
         val ipv6Header =
