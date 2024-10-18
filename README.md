@@ -57,3 +57,5 @@ val packets = listOf(packet)
 kAnonProxy.handlePackets(packets)
 val response = kanonProxy.takeResponse()
 ```
+
+There are more examples of usage in the [tests](src/test/kotlin/com/jasonernst/kanonproxy)
