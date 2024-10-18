@@ -20,6 +20,13 @@ TUN/TAP driver, or an Android VPN iostream or something. This library takes a li
 the `Packet` type from the knet library https://github.com/compscidr/knet, so if you have a
 stream, you can convert that stream into a list of packets by parsing it with that lib.
 
+The other thing to note is that in order to handle ICMP traffic, we use the icmp library:
+https://github.com/compscidr/icmp. Depending on whether you are on linux or android, you
+should pass the appropriate `ICMP` object to the proxy. On linux its `ICMPLinux` on android
+its `ICMPAndroid`. You also need to use different dependencies for each. For linux
+`implementation("com.jasonernst.icmp:icmp-linux")` and for android 
+`implementation("com.jasonernst.icmp:icmp-android")`
+
 Linux:
 ```kotlin
 val kanonProxy = KAnonProxy(ICMPLinux)
