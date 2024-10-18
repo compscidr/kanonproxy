@@ -33,45 +33,6 @@ class TcpHandlingTest {
         }
     }
 
-    fun handshake(
-        sourceAddress: InetAddress,
-        destinationAddress: InetAddress,
-        sourcePort: UShort,
-        destinationPort: UShort,
-        startingSequence: UInt,
-        mss: UShort,
-        kAnonProxy: KAnonProxy,
-    ) {
-//        val sessionKey = Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.TCP.value)
-//        logger.debug("Handshake for session: $sessionKey")
-//        assertFalse(kAnonProxy.sessionTableBySessionKey.contains(sessionKey))
-//
-//        val clientTcpStateMachine = TcpStateMachine()
-//        val synPacket =
-//            TcpHeaderFactory.createSynPacket(
-//                sourceAddress,
-//                destinationAddress,
-//                sourcePort,
-//                destinationPort,
-//                startingSequence,
-//                mss,
-//            )
-//        kAnonProxy.handlePackets(listOf(synPacket))
-//        val expectedSynAck = kAnonProxy.takeResponse()
-//        val session = kAnonProxy.sessionTableBySessionKey.get(sessionKey) as TcpSession
-//        assertEquals(TcpState.SYN_RECEIVED, session.tcpStateMachine.tcpState)
-//        assertTrue(expectedSynAck.nextHeaders is TcpHeader)
-//        val expectedSynAckTcpHeader = expectedSynAck.nextHeaders as TcpHeader
-//        assertTrue(expectedSynAckTcpHeader.isSyn())
-//        assertTrue(expectedSynAckTcpHeader.isAck())
-//        assertEquals(startingSequence + 1u, expectedSynAckTcpHeader.acknowledgementNumber)
-//        logger.debug("Got SYN-ACK: {}", expectedSynAckTcpHeader)
-//
-//        val ack = TcpHeaderFactory.createAckPacket(expectedSynAck.ipHeader, expectedSynAckTcpHeader, expectedSynAckTcpHeader.acknowledgementNumber + 1u, expectedSynAckTcpHeader.sequenceNumber)
-//        kAnonProxy.handlePackets(listOf(ack))
-//        assertEquals(TcpState.ESTABLISHED, session.tcpStateMachine.tcpState)
-    }
-
     @Test fun testIpv4TcpHandshakeClose() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val sourcePort: UShort = 12345u
