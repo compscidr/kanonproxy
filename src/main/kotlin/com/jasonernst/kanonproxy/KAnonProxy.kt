@@ -35,7 +35,7 @@ import java.util.concurrent.LinkedBlockingDeque
  */
 class KAnonProxy(
     val icmp: ICMP,
-    val protector: VpnProtector,
+    val protector: VpnProtector = DummyProtector,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val outgoingQueue = LinkedBlockingDeque<Packet>()
