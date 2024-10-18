@@ -27,12 +27,11 @@ class AnonymousTcpSession(
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine: TcpStateMachine = TcpStateMachine(TcpState.LISTEN, mtu, this)
-    override val channel: SocketChannel =
-        if (destinationAddress is Inet4Address) {
-            SocketChannel.open(StandardProtocolFamily.INET)
-        } else {
-            SocketChannel.open(StandardProtocolFamily.INET6)
-        }
+
+    // note: android doesn't suppor the open function with the protocol family, so just open like this and assume
+    // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
+    // that will do connect during open.
+    override val channel: SocketChannel = SocketChannel.open()
 
     init {
         tcpStateMachine.passiveOpen()
