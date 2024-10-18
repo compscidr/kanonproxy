@@ -3,7 +3,6 @@ package com.jasonernst.kanonproxy.tcp
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
-import com.jasonernst.knet.transport.tcp.InitialSequenceNumberGenerator
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize.Companion.mssOrDefault
 import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
@@ -370,6 +369,7 @@ class TcpStateMachine(
                             ipHeader.destinationAddress.hostAddress,
                             tcpHeader.destinationPort.toInt(),
                         )
+                    logger.debug("ISS: ${transmissionControlBlock!!.iss}")
                     val maybeTimestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                     transmissionControlBlock!!.send_ts_ok = maybeTimestamp != null
                     val response =
@@ -397,6 +397,7 @@ class TcpStateMachine(
                         transmissionControlBlock!!.rto_expiry =
                             System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000L).toLong()
                     }
+                    logger.debug("TCB: $transmissionControlBlock")
                     return@runBlocking listOf(response)
                 }
             }

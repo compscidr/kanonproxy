@@ -12,13 +12,15 @@ import com.jasonernst.knet.transport.tcp.options.TcpOption
 import com.jasonernst.knet.transport.tcp.options.TcpOptionEndOfOptionList
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
+import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.nio.ByteBuffer
-import java.util.Random
 
 object TcpHeaderFactory {
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     /**
      * Performs a bunch of common steps regardless of the response:
      * 1. Copies the headers so we still have the originals
@@ -82,11 +84,14 @@ object TcpHeaderFactory {
         }
         options.add(TcpOptionEndOfOptionList())
 
+        val sourcePort = if (swapSourceAndDestination) tcpHeader.destinationPort else tcpHeader.sourcePort
+        val destinationPort = if (swapSourceAndDestination) tcpHeader.sourcePort else tcpHeader.destinationPort
+
         // if we want to respond with different options this is the place to do it
         val responseTcpHeader =
             TcpHeader(
-                sourcePort = tcpHeader.sourcePort,
-                destinationPort = tcpHeader.destinationPort,
+                sourcePort = sourcePort,
+                destinationPort = destinationPort,
                 sequenceNumber = seqNumber,
                 acknowledgementNumber = ackNumber,
                 windowSize = transmissionControlBlock?.rcv_wnd ?: DEFAULT_WINDOW_SIZE,
@@ -331,8 +336,8 @@ object TcpHeaderFactory {
         return prepareResponseHeaders(
             ipHeader,
             tcpHeader,
-            Random().nextInt().toUInt(),
-            tcpHeader.sequenceNumber + 1u,
+            transmissionControlBlock.iss,
+            transmissionControlBlock.rcv_nxt,
             true,
             ByteBuffer.allocate(0),
             isSyn = true,

@@ -84,7 +84,10 @@ class TcpClient(
 
         logger.debug("Waiting for response from proxy")
         val expectedSynAck = kAnonProxy.takeResponse()
-        packetDumper.dumpBuffer(ByteBuffer.wrap(expectedSynAck.toByteArray()))
+        packetDumper.dumpBuffer(
+            ByteBuffer.wrap(expectedSynAck.toByteArray()),
+            etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4,
+        )
         logger.debug("Got a response, processing")
         val responsePackets =
             tcpStateMachine.processHeaders(
@@ -93,7 +96,7 @@ class TcpClient(
                 expectedSynAck.payload,
             )
         for (packet in responsePackets) {
-            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()))
+            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
             logger.debug("Sending ${packet.nextHeaders} to proxy")
         }
         kAnonProxy.handlePackets(responsePackets)
