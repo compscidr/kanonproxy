@@ -35,11 +35,11 @@ class AnonymousTcpSession(
         }
 
     init {
+        tcpStateMachine.passiveOpen()
+        logger.debug("TCP connecting to {}:{}", destinationAddress, destinationPort)
+        channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
+        logger.debug("TCP Connected")
         CoroutineScope(Dispatchers.IO).launch {
-            logger.debug("TCP connecting to {}:{}", destinationAddress, destinationPort)
-            channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
-            logger.debug("TCP Connected")
-            tcpStateMachine.passiveOpen()
             handleReturnTraffic()
         }
     }

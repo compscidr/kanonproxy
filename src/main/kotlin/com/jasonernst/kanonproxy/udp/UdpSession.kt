@@ -42,10 +42,10 @@ class UdpSession(
         }
 
     init {
+        logger.debug("UDP connecting to {}:{}", destinationAddress, destinationPort)
+        channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
+        logger.debug("UDP Connected")
         CoroutineScope(Dispatchers.IO).launch {
-            logger.debug("UDP connecting to {}:{}", destinationAddress, destinationPort)
-            channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
-            logger.debug("UDP Connected")
             handleReturnTraffic()
         }
     }

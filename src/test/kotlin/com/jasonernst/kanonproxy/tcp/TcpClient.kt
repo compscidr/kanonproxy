@@ -1,8 +1,6 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.KAnonProxy
-import com.jasonernst.knet.datalink.EtherType
-import com.jasonernst.knet.transport.tcp.InitialSequenceNumberGenerator
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
@@ -41,8 +39,9 @@ class TcpClient(
     private val stringDumper = StringPacketDumper()
 
     init {
-        packetDumper.start()
-        Thread.sleep(5000) // give some time to connect
+// uncomment for debugging with wireshark
+//        packetDumper.start()
+//        Thread.sleep(5000) // give some time to connect
     }
 
     /**
