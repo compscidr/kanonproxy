@@ -9,11 +9,13 @@ import com.jasonernst.icmp_common.v4.ICMPv4EchoPacket
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
+import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
+import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.udp.UdpHeader
 import kotlinx.coroutines.CoroutineScope
@@ -39,7 +41,8 @@ class KAnonProxy(
 
     // maps the source IP + port + protocol to a session (need extra work to handle multiple
     // clients (see the handlePackets function)
-    private val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
+    // not private for testing
+    val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
 
     /**
      * Given the list of packets that have been received, this function will
@@ -59,15 +62,9 @@ class KAnonProxy(
         //   is only ever one "client". It would be needed for a VPN server, or a multi-hop internet
         //   sharing app on Android.
         packets.forEach { packet ->
-            if (packet.nextHeaders is UdpHeader) {
-                val udpHeader = packet.nextHeaders as UdpHeader
+            if (packet.nextHeaders is TransportHeader) {
                 CoroutineScope(Dispatchers.IO).launch {
-                    handUdpPacket(packet.ipHeader, udpHeader, packet.payload)
-                }
-            } else if (packet.nextHeaders is TcpHeader) {
-                val tcpHeader = packet.nextHeaders as TcpHeader
-                CoroutineScope(Dispatchers.IO).launch {
-                    handTcpPacket(packet.ipHeader, tcpHeader)
+                    handleTransportPacket(packet.ipHeader, packet.nextHeaders as TransportHeader, packet.payload)
                 }
             } else if (packet.nextHeaders is ICMPNextHeaderWrapper) {
                 val icmpPacket = (packet.nextHeaders as ICMPNextHeaderWrapper).icmpHeader
@@ -81,45 +78,59 @@ class KAnonProxy(
         }
     }
 
-    suspend fun handUdpPacket(
+    private suspend fun handleTransportPacket(
         ipHeader: IpHeader,
-        udpHeader: UdpHeader,
+        transportHeader: TransportHeader,
         payload: ByteArray,
     ) {
         var isNewSession = false
+        val key =
+            Session.getKey(
+                ipHeader.sourceAddress,
+                transportHeader.sourcePort,
+                ipHeader.destinationAddress,
+                transportHeader.destinationPort,
+                ipHeader.protocol,
+            )
         val session =
-            sessionTableBySessionKey.getOrPut(
-                Session.getKey(
-                    ipHeader.sourceAddress,
-                    udpHeader.sourcePort,
-                    ipHeader.destinationAddress,
-                    udpHeader.destinationPort,
-                    ipHeader.protocol,
-                ),
-            ) {
+            sessionTableBySessionKey.getOrPut(key) {
                 isNewSession = true
-                Session(
+                Session.getSession(
                     ipHeader.sourceAddress,
-                    udpHeader.sourcePort,
+                    transportHeader.sourcePort,
                     ipHeader.destinationAddress,
-                    udpHeader.destinationPort,
+                    transportHeader.destinationPort,
                     ipHeader.protocol,
                     outgoingQueue,
                 )
             }
         if (isNewSession) {
-            logger.info("New UDP session: {} with payload size: {}", session, payload.size)
+            logger.info("New session: {} with payload size: {}", session, payload.size)
         }
-        withContext(Dispatchers.IO) {
-            val bytesWrote = session.channel.write(ByteBuffer.wrap(payload))
-            logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
+        when (transportHeader) {
+            is UdpHeader -> {
+                withContext(Dispatchers.IO) {
+                    val bytesWrote = session.channel.write(ByteBuffer.wrap(payload))
+                    logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
+                }
+            }
+            is TcpHeader -> {
+                handleTcpPacket(session as TcpSession, ipHeader, transportHeader, payload)
+            }
+            else -> logger.error("Unsupported transport header type: {}", transportHeader.javaClass)
         }
     }
 
-    suspend fun handTcpPacket(
+    private suspend fun handleTcpPacket(
+        session: TcpSession,
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
+        payload: ByteArray,
     ) {
+        val responsePackets = session.tcpStateMachine.processHeaders(ipHeader, tcpHeader, payload)
+        for (packet in responsePackets) {
+            outgoingQueue.put(packet)
+        }
     }
 
     /**
@@ -134,7 +145,7 @@ class KAnonProxy(
      * When a failure occurs, we need to copy the original IP header + ICMP header into the payload
      * of the ICMP response.
      */
-    suspend fun handleICMPPacket(
+    private suspend fun handleICMPPacket(
         ipHeader: IpHeader,
         icmpPacket: ICMPHeader,
     ) {
