@@ -17,14 +17,14 @@ class AnonymousTcpSession(
     destinationAddress: InetAddress,
     destinationPort: UShort,
     returnQueue: LinkedBlockingDeque<Packet>,
-    protector: VpnProtector
+    protector: VpnProtector,
 ) : TcpSession(
         sourceAddress = sourceAddress,
         sourcePort = sourcePort,
         destinationAddress = destinationAddress,
         destinationPort = destinationPort,
         returnQueue = returnQueue,
-        protector = protector
+        protector = protector,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine: TcpStateMachine = TcpStateMachine(TcpState.LISTEN, mtu, this)

@@ -17,7 +17,7 @@ abstract class Session(
     val destinationPort: UShort,
     val protocol: UByte,
     val returnQueue: LinkedBlockingDeque<Packet>,
-    val protector: VpnProtector
+    val protector: VpnProtector,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     abstract val channel: ByteChannel
@@ -42,7 +42,7 @@ abstract class Session(
             destinationPort: UShort,
             protocol: UByte,
             returnQueue: LinkedBlockingDeque<Packet>,
-            protector: VpnProtector
+            protector: VpnProtector,
         ): Session =
             when (protocol) {
                 IpType.UDP.value -> {
