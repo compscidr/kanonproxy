@@ -40,7 +40,7 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
         tcpClient.close()
@@ -53,7 +53,7 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
 

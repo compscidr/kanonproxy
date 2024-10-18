@@ -29,7 +29,7 @@ class TcpClient(
         destinationAddress = destinationAddress,
         destinationPort = destinationPort,
         returnQueue = LinkedBlockingDeque(),
-        mockk(),
+        mockk(relaxed = true),
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine = TcpStateMachine(TcpState.CLOSED, mtu, this)

@@ -49,7 +49,7 @@ class IcmpHandlingTest {
                 ByteArray(0),
             )
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         kAnonProxy.handlePackets(listOf(packet))
 
         val response = kAnonProxy.takeResponse()
@@ -81,7 +81,7 @@ class IcmpHandlingTest {
                 ByteArray(0),
             )
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         kAnonProxy.handlePackets(listOf(packet))
 
         val response = kAnonProxy.takeResponse()
