@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.Session
+import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
@@ -17,6 +18,7 @@ abstract class TcpSession(
     destinationAddress: InetAddress,
     destinationPort: UShort,
     returnQueue: LinkedBlockingDeque<Packet>,
+    protector: VpnProtector,
 ) : Session(
         sourceAddress = sourceAddress,
         sourcePort = sourcePort,
@@ -24,6 +26,7 @@ abstract class TcpSession(
         destinationPort = destinationPort,
         protocol = IpType.TCP.value,
         returnQueue = returnQueue,
+        protector = protector,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
