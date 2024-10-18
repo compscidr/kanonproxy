@@ -49,6 +49,7 @@ class TcpClient(
      * Blocks until the three-way handshake completes, or fails
      */
     fun connect() {
+        // todo: this assumes a good handshake. update to handle loss, timeout, etc.
         if (tcpStateMachine.tcpState != TcpState.CLOSED) {
             throw RuntimeException("Can't connect, current session isn't closed")
         }
@@ -71,13 +72,6 @@ class TcpClient(
                 mtu,
                 tcpStateMachine.transmissionControlBlock!!,
             )
-        logger.debug(
-            stringDumper.dumpBufferToString(
-                ByteBuffer.wrap(synPacket.toByteArray()),
-                addresses = true,
-                etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4,
-            ),
-        )
         packetDumper.dumpBuffer(ByteBuffer.wrap(synPacket.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
         logger.debug("Sending SYN to proxy: ${synPacket.nextHeaders}")
         kAnonProxy.handlePackets(listOf(synPacket))
@@ -97,7 +91,7 @@ class TcpClient(
             )
         for (packet in responsePackets) {
             packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
-            logger.debug("Sending ${packet.nextHeaders} to proxy")
+            logger.debug("Sending to proxy: {}", packet.nextHeaders)
         }
         kAnonProxy.handlePackets(responsePackets)
     }
@@ -106,17 +100,75 @@ class TcpClient(
      * Blocks until all data is successfully sent
      */
     fun send(buffer: ByteBuffer) {
+        if (tcpStateMachine.tcpState != TcpState.ESTABLISHED) {
+            throw RuntimeException("Not connected")
+        }
+
+        // todo, spin up a thread, track acks until all of the buffer has been acknowledged, then end.
+        //   will also need to process recv data in the ACKs into a recv buffer so that when recv is called
+        //   we haven't lost anything.
+
+        val packets = tcpStateMachine.encapsulateBuffer(buffer, swapSourceDestination = true)
+        for (packet in packets) {
+            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
+            logger.debug("Sending to proxy: {}", packet)
+        }
+        kAnonProxy.handlePackets(packets)
     }
 
     /**
      * Will block until the buffer is full, or the connection is closed
      */
     fun recv(buffer: ByteBuffer) {
+        while (buffer.hasRemaining()) {
+            val packet = kAnonProxy.takeResponse()
+            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
+            // assumes everything arrives in order, which it is not guarenteed to do
+            if (packet.payload.size > 0) {
+                buffer.put(packet.payload)
+            }
+        }
     }
 
     /**
      * Finishes any outstanding sends / recvs and then closes the connection cleanly with a FIN
      */
     fun close() {
+        // todo: assumes a good shutdown, update to handle loss etc.
+
+        // we probably need to handle some of the other states, see the RFC for when close can be called
+        // for now we'll go with the simple case.
+        if (tcpStateMachine.tcpState != TcpState.ESTABLISHED) {
+            throw RuntimeException("Not in established state, can't close")
+        }
+
+        val latestAck =
+            if (lastestACKs.isNotEmpty()) {
+                (
+                    lastestACKs
+                        .removeAt(0)
+                        .packet.nextHeaders as TcpHeader
+                ).acknowledgementNumber
+            } else {
+                tcpStateMachine.transmissionControlBlock!!.rcv_nxt
+            }
+
+        val finPacket =
+            TcpHeaderFactory.createFinPacket(
+                sourceAddress,
+                destinationAddress,
+                sourcePort,
+                destinationPort,
+                seqNumber = tcpStateMachine.transmissionControlBlock!!.snd_nxt,
+                ackNumber = latestAck,
+                swapSourceAndDestination = false,
+                transmissionControlBlock = tcpStateMachine.transmissionControlBlock,
+            )
+        packetDumper.dumpBuffer(ByteBuffer.wrap(finPacket.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
+        kAnonProxy.handlePackets(listOf(finPacket))
+
+        val finAck = kAnonProxy.takeResponse()
+
+        // todo wait for a FIN, send a FIN-ACK - right now there's nothing that triggers the FIN from the proxy side
     }
 }

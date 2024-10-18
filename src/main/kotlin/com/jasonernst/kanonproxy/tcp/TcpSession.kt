@@ -7,6 +7,7 @@ import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingDeque
 
@@ -37,7 +38,8 @@ abstract class TcpSession(
     var lastestACKs = CopyOnWriteArrayList<RetransmittablePacket>()
 
     override fun handlePayloadFromInternet(payload: ByteArray) {
-        TODO()
+        val packets = tcpStateMachine.encapsulateBuffer(ByteBuffer.wrap(payload))
+        returnQueue.addAll(packets)
     }
 
     fun reestablishConnection() {

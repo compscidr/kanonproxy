@@ -2,7 +2,9 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
+import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
+import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize.Companion.mssOrDefault
 import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
@@ -10,6 +12,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
+import java.net.Inet4Address
+import java.net.Inet6Address
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.jvm.javaClass
@@ -2473,6 +2477,76 @@ class TcpStateMachine(
             logger.debug("Wraparound case: snd_una: ${transmissionControlBlock!!.snd_una} > snd_nxt: ${transmissionControlBlock!!.snd_nxt}")
             return tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_una ||
                 tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
+        }
+    }
+
+    fun encapsulateBuffer(
+        buffer: ByteBuffer,
+        swapSourceDestination: Boolean = false,
+    ): List<Packet> {
+        return runBlocking {
+            tcbMutex.withLock {
+                val packets = ArrayList<Packet>()
+
+                val sourceAddress = if (swapSourceDestination) session.destinationAddress else session.sourceAddress
+                val destinationAddress = if (swapSourceDestination) session.sourceAddress else session.destinationAddress
+                val sourcePort = if (swapSourceDestination) session.destinationPort else session.sourcePort
+                val destinationPort = if (swapSourceDestination) session.sourcePort else session.destinationPort
+
+                val tcpHeader = TcpHeader(sourcePort = sourcePort, destinationPort = destinationPort)
+                val ipHeader =
+                    if (sourceAddress is Inet4Address) {
+                        Ipv4Header(
+                            sourceAddress = sourceAddress,
+                            destinationAddress = destinationAddress as Inet4Address,
+                            totalLength =
+                                (
+                                    Ipv4Header.IP4_MIN_HEADER_LENGTH +
+                                        tcpHeader.getHeaderLength()
+                                ).toUShort(),
+                            protocol = IpType.TCP.value,
+                        )
+                    } else {
+                        Ipv6Header(
+                            sourceAddress = sourceAddress as Inet6Address,
+                            destinationAddress = destinationAddress as Inet6Address,
+                            payloadLength = tcpHeader.getHeaderLength(),
+                            protocol = IpType.TCP.value,
+                        )
+                    }
+
+                while (buffer.hasRemaining()) {
+                    // todo: need to reduce further if there are any Ipv6 extension headers
+                    val bytesToTake = min(mss.toInt(), buffer.remaining())
+                    logger.debug("Taking $bytesToTake bytes, have ${buffer.remaining()} bytes remaining")
+                    val payloadCopy = ByteArray(bytesToTake)
+                    buffer.get(payloadCopy)
+                    val latestAck =
+                        if (session.lastestACKs.isNotEmpty()) {
+                            (
+                                session.lastestACKs
+                                    .removeAt(0)
+                                    .packet.nextHeaders as TcpHeader
+                            ).acknowledgementNumber
+                        } else {
+                            transmissionControlBlock!!.rcv_nxt
+                        }
+
+                    val packet =
+                        TcpHeaderFactory.createAckPacket(
+                            ipHeader = ipHeader,
+                            tcpHeader = tcpHeader,
+                            seqNumber = session.tcpStateMachine.transmissionControlBlock!!.snd_nxt,
+                            ackNumber = latestAck,
+                            payload = ByteBuffer.wrap(payloadCopy),
+                            transmissionControlBlock = transmissionControlBlock,
+                        )
+                    session.tcpStateMachine.transmissionControlBlock!!.snd_nxt += bytesToTake.toUShort()
+                    packets.add(packet)
+                }
+
+                return@runBlocking packets
+            }
         }
     }
 

@@ -167,15 +167,17 @@ object TcpHeaderFactory {
         tcpHeader: TcpHeader,
         seqNumber: UInt,
         ackNumber: UInt,
+        swapSourceAndDestination: Boolean = true,
         payload: ByteBuffer = ByteBuffer.allocate(0),
         isPsh: Boolean = false,
         transmissionControlBlock: TransmissionControlBlock?,
     ): Packet =
         prepareResponseHeaders(
-            ipHeader,
-            tcpHeader,
-            seqNumber,
-            ackNumber,
+            ipHeader = ipHeader,
+            tcpHeader = tcpHeader,
+            seqNumber = seqNumber,
+            ackNumber = ackNumber,
+            swapSourceAndDestination = swapSourceAndDestination,
             payload = payload,
             isAck = true,
             isPsh = isPsh,
@@ -190,17 +192,60 @@ object TcpHeaderFactory {
         tcpHeader: TcpHeader,
         seqNumber: UInt,
         ackNumber: UInt,
+        swapSourceAndDestination: Boolean = true,
         transmissionControlBlock: TransmissionControlBlock?,
     ): Packet =
         prepareResponseHeaders(
-            ipHeader,
-            tcpHeader,
-            seqNumber,
-            ackNumber,
+            ipHeader = ipHeader,
+            tcpHeader = tcpHeader,
+            seqNumber = seqNumber,
+            ackNumber = ackNumber,
             isFin = true,
             isAck = true,
+            swapSourceAndDestination = swapSourceAndDestination,
             transmissionControlBlock = transmissionControlBlock,
         )
+
+    fun createFinPacket(
+        sourceAddress: InetAddress,
+        destinationAddress: InetAddress,
+        sourcePort: UShort,
+        destinationPort: UShort,
+        seqNumber: UInt,
+        ackNumber: UInt,
+        swapSourceAndDestination: Boolean = true,
+        transmissionControlBlock: TransmissionControlBlock?,
+    ): Packet {
+        val tcpHeader = TcpHeader(sourcePort = sourcePort, destinationPort = destinationPort)
+        val ipHeader =
+            if (sourceAddress is Inet4Address) {
+                Ipv4Header(
+                    sourceAddress = sourceAddress,
+                    destinationAddress = destinationAddress as Inet4Address,
+                    totalLength =
+                        (
+                            Ipv4Header.IP4_MIN_HEADER_LENGTH +
+                                tcpHeader.getHeaderLength()
+                        ).toUShort(),
+                    protocol = IpType.TCP.value,
+                )
+            } else {
+                Ipv6Header(
+                    sourceAddress = sourceAddress as Inet6Address,
+                    destinationAddress = destinationAddress as Inet6Address,
+                    payloadLength = tcpHeader.getHeaderLength(),
+                    protocol = IpType.TCP.value,
+                )
+            }
+        return createFinPacket(
+            ipHeader = ipHeader,
+            tcpHeader = tcpHeader,
+            seqNumber = seqNumber,
+            ackNumber = ackNumber,
+            swapSourceAndDestination = swapSourceAndDestination,
+            transmissionControlBlock = transmissionControlBlock,
+        )
+    }
 
     /**
      * Given the last received packet from the client, create an RST packet to reset the connection.
@@ -237,10 +282,10 @@ object TcpHeaderFactory {
         }
 
         return prepareResponseHeaders(
-            ipHeader,
-            tcpHeader,
-            seqNumber,
-            ackNumber,
+            ipHeader = ipHeader,
+            tcpHeader = tcpHeader,
+            seqNumber = seqNumber,
+            ackNumber = ackNumber,
             swapSourceAndDestination = true,
             isRst = true,
             transmissionControlBlock = transmissionControlBlock,
@@ -285,10 +330,10 @@ object TcpHeaderFactory {
             )
 
         return prepareResponseHeaders(
-            ipHeader,
-            tcpHeader,
-            startingSeq,
-            0u,
+            ipHeader = ipHeader,
+            tcpHeader = tcpHeader,
+            seqNumber = startingSeq,
+            ackNumber = 0u,
             swapSourceAndDestination = false,
             isSyn = true,
             mss = mss,
