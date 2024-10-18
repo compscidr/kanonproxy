@@ -17,6 +17,7 @@ abstract class Session(
     val destinationPort: UShort,
     val protocol: UByte,
     val returnQueue: LinkedBlockingDeque<Packet>,
+    val protector: VpnProtector
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     abstract val channel: ByteChannel
@@ -41,13 +42,14 @@ abstract class Session(
             destinationPort: UShort,
             protocol: UByte,
             returnQueue: LinkedBlockingDeque<Packet>,
+            protector: VpnProtector
         ): Session =
             when (protocol) {
                 IpType.UDP.value -> {
-                    UdpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue)
+                    UdpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue, protector)
                 }
                 IpType.TCP.value -> {
-                    AnonymousTcpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue)
+                    AnonymousTcpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue, protector)
                 }
                 else -> {
                     throw IllegalArgumentException("Unsupported protocol for session")

@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy.udp
 
 import com.jasonernst.kanonproxy.Session
+import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
@@ -24,6 +25,7 @@ class UdpSession(
     destinationAddress: InetAddress,
     destinationPort: UShort,
     returnQueue: LinkedBlockingDeque<Packet>,
+    protector: VpnProtector,
 ) : Session(
         sourceAddress = sourceAddress,
         sourcePort = sourcePort,
@@ -31,6 +33,7 @@ class UdpSession(
         destinationPort = destinationPort,
         protocol = IpType.UDP.value,
         returnQueue = returnQueue,
+        protector = protector,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -43,6 +46,7 @@ class UdpSession(
 
     init {
         logger.debug("UDP connecting to {}:{}", destinationAddress, destinationPort)
+        protector.protectUDPSocket(channel.socket())
         channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
         logger.debug("UDP Connected")
         CoroutineScope(Dispatchers.IO).launch {
