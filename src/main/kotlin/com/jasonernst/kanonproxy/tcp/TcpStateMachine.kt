@@ -685,8 +685,7 @@ class TcpStateMachine(
                             transmissionControlBlock!!.snd_wnd = tcpHeader.windowSize
                             transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
                             transmissionControlBlock!!.snd_wl2 = tcpHeader.acknowledgementNumber
-//                            session.lastTransportHeader = tcpHeader
-//                            session.lastIpHeader = ipHeader
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
 
                             // not sure if this is necessary here
                             removeAckedPacketsFromRetransmit()

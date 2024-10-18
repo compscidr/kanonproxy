@@ -1,6 +1,6 @@
 package com.jasonernst.kanonproxy
 
-import com.jasonernst.kanonproxy.tcp.TcpSession
+import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession
 import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
@@ -11,9 +11,9 @@ import java.nio.channels.ByteChannel
 import java.util.concurrent.LinkedBlockingDeque
 
 abstract class Session(
-    val sourceIp: InetAddress,
+    val sourceAddress: InetAddress,
     val sourcePort: UShort,
-    val destinationIp: InetAddress,
+    val destinationAddress: InetAddress,
     val destinationPort: UShort,
     val protocol: UByte,
     val returnQueue: LinkedBlockingDeque<Packet>,
@@ -47,7 +47,7 @@ abstract class Session(
                     UdpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue)
                 }
                 IpType.TCP.value -> {
-                    TcpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue)
+                    AnonymousTcpSession(sourceIp, sourcePort, destinationIp, destinationPort, returnQueue)
                 }
                 else -> {
                     throw IllegalArgumentException("Unsupported protocol for session")
@@ -55,10 +55,10 @@ abstract class Session(
             }
     }
 
-    fun getKey(): String = getKey(sourceIp, sourcePort, destinationIp, destinationPort, protocol)
+    fun getKey(): String = getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, protocol)
 
     override fun toString(): String =
-        "Session(sourceIp='$sourceIp', sourcePort=$sourcePort, destinationIp='$destinationIp', destinationPort=$destinationPort, protocol=$protocol)"
+        "Session(sourceAddress='$sourceAddress', sourcePort=$sourcePort, destinationAddress='$destinationAddress', destinationPort=$destinationPort, protocol=$protocol)"
 
     fun handleReturnTraffic() {
         while (channel.isOpen) {

@@ -19,15 +19,15 @@ import java.nio.channels.DatagramChannel
 import java.util.concurrent.LinkedBlockingDeque
 
 class UdpSession(
-    sourceIp: InetAddress,
+    sourceAddress: InetAddress,
     sourcePort: UShort,
-    destinationIp: InetAddress,
+    destinationAddress: InetAddress,
     destinationPort: UShort,
     returnQueue: LinkedBlockingDeque<Packet>,
 ) : Session(
-        sourceIp = sourceIp,
+        sourceAddress = sourceAddress,
         sourcePort = sourcePort,
-        destinationIp = destinationIp,
+        destinationAddress = destinationAddress,
         destinationPort = destinationPort,
         protocol = IpType.UDP.value,
         returnQueue = returnQueue,
@@ -35,7 +35,7 @@ class UdpSession(
     private val logger = LoggerFactory.getLogger(javaClass)
 
     override val channel: DatagramChannel =
-        if (destinationIp is Inet4Address) {
+        if (destinationAddress is Inet4Address) {
             DatagramChannel.open(StandardProtocolFamily.INET)
         } else {
             DatagramChannel.open(StandardProtocolFamily.INET6)
@@ -43,8 +43,8 @@ class UdpSession(
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
-            logger.debug("UDP connecting to {}:{}", destinationIp, destinationPort)
-            channel.connect(InetSocketAddress(destinationIp, destinationPort.toInt()))
+            logger.debug("UDP connecting to {}:{}", destinationAddress, destinationPort)
+            channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
             logger.debug("UDP Connected")
             handleReturnTraffic()
         }
@@ -53,10 +53,10 @@ class UdpSession(
     override fun handlePayloadFromInternet(payload: ByteArray) {
         val udpHeader = UdpHeader(destinationPort, sourcePort, payload.size.toUShort(), 0u)
         val ipHeader =
-            if (sourceIp is Inet4Address) {
+            if (sourceAddress is Inet4Address) {
                 Ipv4Header(
-                    sourceAddress = destinationIp as Inet4Address,
-                    destinationAddress = sourceIp as Inet4Address,
+                    sourceAddress = destinationAddress as Inet4Address,
+                    destinationAddress = sourceAddress,
                     protocol = IpType.UDP.value,
                     totalLength =
                         (
@@ -67,8 +67,8 @@ class UdpSession(
                 )
             } else {
                 Ipv6Header(
-                    sourceAddress = destinationIp as Inet6Address,
-                    destinationAddress = sourceIp as Inet6Address,
+                    sourceAddress = destinationAddress as Inet6Address,
+                    destinationAddress = sourceAddress as Inet6Address,
                     protocol = IpType.UDP.value,
                     payloadLength = (40u + udpHeader.totalLength).toUShort(),
                 )

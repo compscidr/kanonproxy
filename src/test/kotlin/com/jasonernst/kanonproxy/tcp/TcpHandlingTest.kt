@@ -76,11 +76,10 @@ class TcpHandlingTest {
         val sourcePort: UShort = 12345u
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
-        val startingSequence = 0u
-        val mss: UShort = 1500u
 
         val kAnonProxy = KAnonProxy(ICMPLinux)
-        handshake(sourceAddress, destinationAddress, sourcePort, destinationPort, startingSequence, mss, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        tcpClient.connect()
     }
 
     @Test fun testIpv6TcpPacketHandling() {
