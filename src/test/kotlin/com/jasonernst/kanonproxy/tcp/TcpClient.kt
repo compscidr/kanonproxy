@@ -4,6 +4,7 @@ import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
+import io.mockk.mockk
 import org.slf4j.LoggerFactory
 import java.io.RandomAccessFile
 import java.net.InetAddress
@@ -28,6 +29,7 @@ class TcpClient(
         destinationAddress = destinationAddress,
         destinationPort = destinationPort,
         returnQueue = LinkedBlockingDeque(),
+        mockk(),
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine = TcpStateMachine(TcpState.CLOSED, mtu, this)

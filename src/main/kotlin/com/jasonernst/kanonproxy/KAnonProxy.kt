@@ -103,6 +103,7 @@ class KAnonProxy(
                     transportHeader.destinationPort,
                     ipHeader.protocol,
                     outgoingQueue,
+                    protector,
                 )
             }
         if (isNewSession) {

@@ -8,6 +8,7 @@ import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.transport.udp.UdpHeader
 import com.jasonernst.testservers.server.UdpEchoServer
+import io.mockk.mockk
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeAll
@@ -59,7 +60,7 @@ class UdpHandlingTest {
                 udpHeader,
                 payload,
             )
-        val kAnonProxy = KAnonProxy(ICMPLinux)
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
         kAnonProxy.handlePackets(listOf(packet))
 
         val response = kAnonProxy.takeResponse()
@@ -86,7 +87,7 @@ class UdpHandlingTest {
                 udpHeader,
                 payload,
             )
-        val kAnonProxy = KAnonProxy(ICMPLinux)
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
         kAnonProxy.handlePackets(listOf(packet))
 
         val response = kAnonProxy.takeResponse()

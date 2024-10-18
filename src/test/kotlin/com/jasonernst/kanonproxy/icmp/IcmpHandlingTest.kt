@@ -9,6 +9,7 @@ import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
+import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -48,7 +49,7 @@ class IcmpHandlingTest {
                 ByteArray(0),
             )
 
-        val kAnonProxy = KAnonProxy(ICMPLinux)
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
         kAnonProxy.handlePackets(listOf(packet))
 
         val response = kAnonProxy.takeResponse()
@@ -80,7 +81,7 @@ class IcmpHandlingTest {
                 ByteArray(0),
             )
 
-        val kAnonProxy = KAnonProxy(ICMPLinux)
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk())
         kAnonProxy.handlePackets(listOf(packet))
 
         val response = kAnonProxy.takeResponse()
