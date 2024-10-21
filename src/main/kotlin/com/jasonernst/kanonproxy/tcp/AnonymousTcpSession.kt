@@ -34,6 +34,14 @@ class AnonymousTcpSession(
     // that will do connect during open.
     override val channel: SocketChannel = SocketChannel.open()
 
+    override fun handleReturnTrafficLoop(): Int {
+        val len = super.handleReturnTrafficLoop()
+        if (len == 0 && tcpStateMachine.tcpState == TcpState.CLOSE_WAIT) {
+            close()
+        }
+        return len
+    }
+
     init {
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
@@ -41,7 +49,23 @@ class AnonymousTcpSession(
         channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
         logger.debug("TCP Connected")
         CoroutineScope(Dispatchers.IO).launch {
-            handleReturnTraffic()
+            try {
+                while (channel.isOpen) {
+                    do {
+                        val len = handleReturnTrafficLoop()
+                    } while (channel.isOpen && len > -1)
+                }
+            } catch (e: Exception) {
+                logger.warn("Remote Tcp channel closed")
+                close()
+            }
         }
+    }
+
+    private fun close(): Packet? {
+        if (channel.isOpen) {
+            channel.close()
+        }
+        return super.close(true)
     }
 }

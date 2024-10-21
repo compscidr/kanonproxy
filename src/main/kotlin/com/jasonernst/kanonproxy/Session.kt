@@ -62,23 +62,18 @@ abstract class Session(
     override fun toString(): String =
         "Session(sourceAddress='$sourceAddress', sourcePort=$sourcePort, destinationAddress='$destinationAddress', destinationPort=$destinationPort, protocol=$protocol)"
 
-    fun handleReturnTraffic() {
-        while (channel.isOpen) {
-            logger.debug("Waiting for return traffic on {}", this)
-            val len = channel.read(readBuffer)
-            if (len == -1) {
-                logger.error("Channel closed")
-                break
-            }
-            if (len > 0) {
-                readBuffer.flip()
-                val payload = ByteArray(len)
-                readBuffer.get(payload, 0, len)
-                handlePayloadFromInternet(payload)
-                logger.debug("Read {} bytes from {}", len, channel)
-                readBuffer.clear()
-            }
+    open fun handleReturnTrafficLoop(): Int {
+        // logger.debug("Waiting for return traffic on {}", this)
+        val len = channel.read(readBuffer)
+        if (len > 0) {
+            readBuffer.flip()
+            val payload = ByteArray(len)
+            readBuffer.get(payload, 0, len)
+            handlePayloadFromInternet(payload)
+            logger.debug("Read {} bytes from {}", len, channel)
+            readBuffer.clear()
         }
+        return len
     }
 
     abstract fun handlePayloadFromInternet(payload: ByteArray)
