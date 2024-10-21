@@ -989,6 +989,7 @@ class TcpStateMachine(
                         transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
                         tcpState = TcpState.CLOSE_WAIT
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+
                         return@runBlocking listOf(
                             TcpHeaderFactory.createAckPacket(
                                 ipHeader,

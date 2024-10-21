@@ -50,7 +50,13 @@ class UdpSession(
         channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
         logger.debug("UDP Connected")
         CoroutineScope(Dispatchers.IO).launch {
-            handleReturnTraffic()
+            try {
+                do {
+                    val len = handleReturnTrafficLoop()
+                } while (channel.isOpen && len > -1)
+            } catch (e: Exception) {
+                logger.warn("Remote Udp channel closed")
+            }
         }
     }
 

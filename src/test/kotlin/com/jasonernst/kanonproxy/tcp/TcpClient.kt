@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.KAnonProxy
+import com.jasonernst.knet.Packet
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
@@ -134,7 +135,7 @@ class TcpClient(
     /**
      * Finishes any outstanding sends / recvs and then closes the connection cleanly with a FIN
      */
-    fun close() {
+    fun close(): Packet? {
         // todo: assumes a good shutdown, update to handle loss etc.
 
         // we probably need to handle some of the other states, see the RFC for when close can be called
@@ -143,33 +144,14 @@ class TcpClient(
             throw RuntimeException("Not in established state, can't close")
         }
 
-        val latestAck =
-            if (lastestACKs.isNotEmpty()) {
-                (
-                    lastestACKs
-                        .removeAt(0)
-                        .packet.nextHeaders as TcpHeader
-                ).acknowledgementNumber
-            } else {
-                tcpStateMachine.transmissionControlBlock!!.rcv_nxt
-            }
-
-        val finPacket =
-            TcpHeaderFactory.createFinPacket(
-                sourceAddress,
-                destinationAddress,
-                sourcePort,
-                destinationPort,
-                seqNumber = tcpStateMachine.transmissionControlBlock!!.snd_nxt,
-                ackNumber = latestAck,
-                swapSourceAndDestination = false,
-                transmissionControlBlock = tcpStateMachine.transmissionControlBlock,
-            )
-        packetDumper.dumpBuffer(ByteBuffer.wrap(finPacket.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
-        kAnonProxy.handlePackets(listOf(finPacket))
-
+        // send the FIN
+        val packet = super.close(false)
+        if (packet != null) {
+            kAnonProxy.handlePackets(listOf(packet))
+        }
+        logger.debug("Waiting for FIN-ACK")
         val finAck = kAnonProxy.takeResponse()
-
-        // todo wait for a FIN, send a FIN-ACK - right now there's nothing that triggers the FIN from the proxy side
+        logger.debug("Got FIN-ACK")
+        return null
     }
 }
