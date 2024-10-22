@@ -732,7 +732,7 @@ class TcpStateMachine(
                                 // session.addPayloadForInternet(payload, payload.size)
                                 try {
                                     session.channel.write(ByteBuffer.wrap(payload))
-                                } catch(e: Exception) {
+                                } catch (e: Exception) {
                                     val packet = session.close()
                                     if (packet != null) {
                                         return@runBlocking listOf(packet)
@@ -973,7 +973,7 @@ class TcpStateMachine(
                         // session.addPayloadForInternet(payload, payload.size)
                         try {
                             session.channel.write(ByteBuffer.wrap(payload))
-                        } catch(e: Exception) {
+                        } catch (e: Exception) {
                             val packet = session.close()
                             if (packet != null) {
                                 return@runBlocking listOf(packet)
@@ -1211,7 +1211,7 @@ class TcpStateMachine(
                         // session.addPayloadForInternet(payload, payload.size)
                         try {
                             session.channel.write(ByteBuffer.wrap(payload))
-                        } catch(e: Exception) {
+                        } catch (e: Exception) {
                             val packet = session.close()
                             if (packet != null) {
                                 return@runBlocking listOf(packet)
@@ -1432,7 +1432,7 @@ class TcpStateMachine(
                     // session.addPayloadForInternet(payload, payload.size)
                     try {
                         session.channel.write(ByteBuffer.wrap(payload))
-                    } catch(e: Exception) {
+                    } catch (e: Exception) {
                         val packet = session.close()
                         if (packet != null) {
                             return@runBlocking listOf(packet)
