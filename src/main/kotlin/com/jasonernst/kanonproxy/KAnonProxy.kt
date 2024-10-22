@@ -112,8 +112,12 @@ class KAnonProxy(
         when (transportHeader) {
             is UdpHeader -> {
                 withContext(Dispatchers.IO) {
-                    val bytesWrote = session.channel.write(ByteBuffer.wrap(payload))
-                    logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
+                    try {
+                        val bytesWrote = session.channel.write(ByteBuffer.wrap(payload))
+                        logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
+                    } catch (e: Exception) {
+                        logger.error("Error writing to UDP channel: $e")
+                    }
                 }
             }
             is TcpHeader -> {
