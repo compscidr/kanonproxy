@@ -730,7 +730,16 @@ class TcpStateMachine(
                             assert(payloadSize == payload.size.toUInt())
                             if (payload.isNotEmpty()) {
                                 // session.addPayloadForInternet(payload, payload.size)
-                                session.channel.write(ByteBuffer.wrap(payload))
+                                try {
+                                    session.channel.write(ByteBuffer.wrap(payload))
+                                } catch(e: Exception) {
+                                    val packet = session.close()
+                                    if (packet != null) {
+                                        return@runBlocking listOf(packet)
+                                    } else {
+                                        return@runBlocking emptyList()
+                                    }
+                                }
                                 val ack =
                                     TcpHeaderFactory.createAckPacket(
                                         ipHeader,
@@ -962,7 +971,16 @@ class TcpStateMachine(
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
                         // session.addPayloadForInternet(payload, payload.size)
-                        session.channel.write(ByteBuffer.wrap(payload))
+                        try {
+                            session.channel.write(ByteBuffer.wrap(payload))
+                        } catch(e: Exception) {
+                            val packet = session.close()
+                            if (packet != null) {
+                                return@runBlocking listOf(packet)
+                            } else {
+                                return@runBlocking emptyList()
+                            }
+                        }
                         val ack =
                             TcpHeaderFactory.createAckPacket(
                                 ipHeader,
@@ -1191,7 +1209,16 @@ class TcpStateMachine(
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
                         // session.addPayloadForInternet(payload, payload.size)
-                        session.channel.write(ByteBuffer.wrap(payload))
+                        try {
+                            session.channel.write(ByteBuffer.wrap(payload))
+                        } catch(e: Exception) {
+                            val packet = session.close()
+                            if (packet != null) {
+                                return@runBlocking listOf(packet)
+                            } else {
+                                return@runBlocking emptyList()
+                            }
+                        }
                         val ack =
                             TcpHeaderFactory.createAckPacket(
                                 ipHeader,
@@ -1403,7 +1430,16 @@ class TcpStateMachine(
                 assert(payloadSize == payload.size.toUInt())
                 if (payload.isNotEmpty()) {
                     // session.addPayloadForInternet(payload, payload.size)
-                    session.channel.write(ByteBuffer.wrap(payload))
+                    try {
+                        session.channel.write(ByteBuffer.wrap(payload))
+                    } catch(e: Exception) {
+                        val packet = session.close()
+                        if (packet != null) {
+                            return@runBlocking listOf(packet)
+                        } else {
+                            return@runBlocking emptyList()
+                        }
+                    }
                     val ack =
                         TcpHeaderFactory.createAckPacket(
                             ipHeader,
