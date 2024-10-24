@@ -1985,7 +1985,6 @@ class TcpStateMachine(
                         tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
-                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         outgoingBuffer.clear()
                         return@runBlocking emptyList<Packet>()
                     }
