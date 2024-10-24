@@ -10,7 +10,9 @@ import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
 import com.jasonernst.kanonproxy.tcp.TcpSession
+import com.jasonernst.kanonproxy.tcp.TcpState
 import com.jasonernst.knet.Packet
+import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
@@ -38,6 +40,8 @@ class KAnonProxy(
     val protector: VpnProtector = DummyProtector,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+
+    // todo: we need a per-session queue, not a global queue, or we'll have collisions on the take calls
     private val outgoingQueue = LinkedBlockingDeque<Packet>()
 
     // maps the source IP + port + protocol to a session (need extra work to handle multiple
@@ -63,18 +67,30 @@ class KAnonProxy(
         //   is only ever one "client". It would be needed for a VPN server, or a multi-hop internet
         //   sharing app on Android.
         packets.forEach { packet ->
-            if (packet.nextHeaders is TransportHeader) {
-                CoroutineScope(Dispatchers.IO).launch {
-                    handleTransportPacket(packet.ipHeader, packet.nextHeaders as TransportHeader, packet.payload)
+            if (packet.ipHeader == null || packet.nextHeaders == null || packet.payload == null) {
+                logger.debug("missing header(s) or payload, skipping packet")
+                return@forEach
+            }
+            when (packet.nextHeaders) {
+                is TransportHeader -> {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        Thread.currentThread().name = "KanonProxy Transport Packet Handler"
+                        handleTransportPacket(packet.ipHeader!!, packet.nextHeaders as TransportHeader, packet.payload!!)
+                    }
                 }
-            } else if (packet.nextHeaders is ICMPNextHeaderWrapper) {
-                val icmpPacket = (packet.nextHeaders as ICMPNextHeaderWrapper).icmpHeader
-                logger.debug("Got ICMP packet {}", icmpPacket)
-                CoroutineScope(Dispatchers.IO).launch {
-                    handleICMPPacket(packet.ipHeader, icmpPacket)
+
+                is ICMPNextHeaderWrapper -> {
+                    val icmpPacket = (packet.nextHeaders as ICMPNextHeaderWrapper).icmpHeader
+                    logger.debug("Got ICMP packet {}", icmpPacket)
+                    CoroutineScope(Dispatchers.IO).launch {
+                        Thread.currentThread().name = "KanonProxy ICMP Packet Handler"
+                        handleICMPPacket(packet.ipHeader!!, icmpPacket)
+                    }
                 }
-            } else {
-                logger.error("Unsupported packet type: {}", packet.javaClass)
+
+                else -> {
+                    logger.error("Unsupported packet type: {}", packet.javaClass)
+                }
             }
         }
     }
@@ -122,6 +138,13 @@ class KAnonProxy(
             }
             is TcpHeader -> {
                 handleTcpPacket(session as TcpSession, ipHeader, transportHeader, payload)
+                if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+                    logger.debug("Tcp session is closed, removing from session table, {}", session)
+                    sessionTableBySessionKey.remove(key)
+
+                    // todo: we need this to be per-session at some point
+                    outgoingQueue.put(SentinelPacket)
+                }
             }
             else -> logger.error("Unsupported transport header type: {}", transportHeader.javaClass)
         }

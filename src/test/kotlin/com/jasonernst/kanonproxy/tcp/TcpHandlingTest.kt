@@ -7,6 +7,7 @@ import io.mockk.mockk
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.slf4j.LoggerFactory
@@ -14,6 +15,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.nio.ByteBuffer
 
+// this needs to be set to 250 if we want to test the TIME_WAIT state
 @Timeout(20)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -34,7 +36,8 @@ class TcpHandlingTest {
         }
     }
 
-    @Test fun testIpv4TcpHandshakeClose() {
+    @Test
+    fun ipv4TcpHandshakeClose() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val sourcePort: UShort = 12345u
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
@@ -43,10 +46,50 @@ class TcpHandlingTest {
         val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
-        tcpClient.close()
+        tcpClient.closeClient()
     }
 
-    @Test fun testIpv4TcpPacketHandling() {
+    /**
+     * This takes takes a little bit more than 240s to run before the TIME_WAIT state is done. We might want to consider
+     * reducing the MSL timer for this test to speed it up.
+     */
+    @Disabled("This test takes a long time to run")
+    @Test
+    fun ipv4TcpHandshakeCloseWaitForTimeWait() {
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        tcpClient.connect()
+        tcpClient.closeClient(true)
+    }
+
+    /**
+     * Make sure we can handle a TCP session teardown, and then start back up with the same source and destination.
+     * see: https://datatracker.ietf.org/doc/html/rfc9293#name-half-closed-connections
+     */
+    @Test
+    fun ipv4TwoSubsequentTcpHandshakes() {
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        tcpClient.connect()
+        tcpClient.closeClient()
+        logger.debug("First session closed")
+
+        val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        tcpClient2.connect()
+        tcpClient2.closeClient()
+    }
+
+    @Test fun ipv4TcpSendRecvEcho() {
         val payload = "Test Data".toByteArray()
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val sourcePort: UShort = 12345u
@@ -62,11 +105,37 @@ class TcpHandlingTest {
         val recvBuffer = ByteBuffer.allocate(payload.size)
         tcpClient.recv(recvBuffer)
 
-        tcpClient.close()
+        tcpClient.closeClient()
 
         assertArrayEquals(payload, recvBuffer.array())
     }
 
-    @Test fun testIpv6TcpPacketHandling() {
+    /**
+     * This test is for a second subsequent session after the first one has completed.
+     */
+    @Test fun ipv4TcpSendRecvEchoSecondSession() {
+        val payload = "Test Data".toByteArray()
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+
+        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        tcpClient.connect()
+
+        tcpClient.send(ByteBuffer.wrap(payload))
+
+        val recvBuffer = ByteBuffer.allocate(payload.size)
+        tcpClient.recv(recvBuffer)
+
+        tcpClient.closeClient()
+
+        assertArrayEquals(payload, recvBuffer.array())
+
+        val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        tcpClient2.connect()
     }
+
+    // todo: ipv6 tests
 }

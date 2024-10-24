@@ -8,6 +8,12 @@ import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize.Companion.mssOrDefault
 import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -40,7 +46,7 @@ import kotlin.toUInt
  *   normal IP/Transport/Payload.
  */
 class TcpStateMachine(
-    var tcpState: TcpState = TcpState.CLOSED,
+    var tcpState: MutableStateFlow<TcpState> = MutableStateFlow(TcpState.CLOSED),
     val mtu: UShort,
     val session: TcpSession,
     val receiveBufferSize: UShort = DEFAULT_BUFFER_SIZE.toUShort(),
@@ -54,26 +60,27 @@ class TcpStateMachine(
     // be the minimum effective MSS of the two endpoints)
     var mss: UShort = 0u
 
-    // the minimum MTU between this side and the remote side, used to derive the MSS. Don't really
-    // need this as a variable, other than to just make debugging easier
-    var minMtu: UShort = 0u
+    // this is data waiting to be encapsulated and sent out. The head of the buffer is equivalent to snd_una. The end
+    // of the buffer is equivalent to send_nxt.
+    val outgoingMutex = Mutex()
 
-    // TODO: instead of using a queue of packets, we should keep a buffer of transmitted data and then
-    //   compact it as ACKs are received.
-    var retransmitQueue = ConcurrentLinkedQueue<Packet>() // var to make tests easier
+    private val retransmitQueue = ConcurrentLinkedQueue<Packet>()
+    private val outgoingBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+
     var isClosed = false
+    var timeWaitJob: Job? = null
 
     companion object {
         const val ALPHA = 1.0 / 8 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
         const val BETA = 1.0 / 4 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
         val G = 0.5 // clock granularity in seconds
         val K = 4.0 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
-        val MSL = 2.0 * 60.0 // maximum segment lifetime in seconds
+        val MSL = 2.0 * 60.0 // maximum segment lifetime(s): https://datatracker.ietf.org/doc/html/rfc9293#section-3.4.2
     }
 
     fun passiveOpen() {
         runBlocking {
-            tcpState = TcpState.LISTEN
+            tcpState.value = TcpState.LISTEN
             tcbMutex.withLock {
                 transmissionControlBlock = TransmissionControlBlock(rcv_wnd = receiveBufferSize)
                 transmissionControlBlock!!.passive_open = true
@@ -83,7 +90,7 @@ class TcpStateMachine(
 
     fun activeOpen() {
         runBlocking {
-            tcpState = TcpState.SYN_SENT
+            tcpState.value = TcpState.SYN_SENT
             tcbMutex.withLock {
                 transmissionControlBlock = TransmissionControlBlock(rcv_wnd = receiveBufferSize)
                 transmissionControlBlock!!.passive_open = false
@@ -120,9 +127,9 @@ class TcpStateMachine(
         payload: ByteArray,
     ): List<Packet> {
         if (payload.isNotEmpty()) {
-            logger.trace("Handling state: {} {} Payload:{} bytes", tcpState, tcpHeader, payload.size)
+            logger.trace("Handling state: {} {} Payload:{} bytes", tcpState.value, tcpHeader, payload.size)
         } else {
-            logger.trace("Handling state: {} {}", tcpState, tcpHeader)
+            logger.trace("Handling state: {} {}", tcpState.value, tcpHeader)
         }
 
         // dummy check on the payload length matching otherwise, we get messed up calculations
@@ -134,7 +141,7 @@ class TcpStateMachine(
             throw IllegalArgumentException("Computed payload length: $computedPayloadLength does not match payload length: ${payload.size}")
         }
 
-        when (tcpState) {
+        when (tcpState.value) {
             TcpState.CLOSED -> {
                 return handleClosedState(ipHeader, tcpHeader)
             }
@@ -324,7 +331,7 @@ class TcpStateMachine(
         //        for any arriving ACK-bearing segment
         if (tcpHeader.isAck()) {
             logger.error("Received ACK in LISTEN state. Enqueuing RST: $tcpHeader")
-//                tcpState = TcpState.TIME_WAIT
+//                tcpState.value = TcpState.TIME_WAIT
 //            val dummyBuffer = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
 //            dummyBuffer.put(ipHeader.toByteArray())
 //            dummyBuffer.put(tcpHeader.toByteArray())
@@ -352,7 +359,7 @@ class TcpStateMachine(
             transmissionControlBlock!!.cwnd = transmissionControlBlock!!.iw
             logger.debug("Setting MSS to: $mss")
 
-            // todo: needt to implement that option
+            // todo: need to implement that option
 //            if (tcpHeader.getOptions().contains(TcpOptionSACKPermitted)) {
 //                transmissionControlBlock!!.sack_permitted = true
 //            }
@@ -360,7 +367,7 @@ class TcpStateMachine(
             // todo: 3.10.7.2: if the SYN bit is set, check the security.  If the security/
             //         compartment on the incoming segment does not exactly match the
             //         security/compartment in the TCB, then send a reset and return.
-            retransmitQueue.clear() // just to be sure we start in a fresh state
+            // retransmitQueue.clear() // just to be sure we start in a fresh state
 
             return runBlocking {
                 tcbMutex.withLock {
@@ -395,7 +402,7 @@ class TcpStateMachine(
                     transmissionControlBlock!!.rto_expiry =
                         System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000).toLong()
                     logger.debug("Transition to SYN_RECEIVED state")
-                    tcpState = TcpState.SYN_RECEIVED
+                    tcpState.value = TcpState.SYN_RECEIVED
                     transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                     if (transmissionControlBlock!!.rto_expiry == 0L) {
                         transmissionControlBlock!!.rto_expiry =
@@ -511,10 +518,10 @@ class TcpStateMachine(
                     if (tcpHeader.sequenceNumber == transmissionControlBlock!!.rcv_nxt) {
                         logger.debug("Received RST in SYN_SENT state, transitioning to CLOSED: $tcpHeader")
                         // RFC9293: If the RST bit is set, the connection should be aborted and the TCB should be deleted
-                        tcpState = TcpState.CLOSED
+                        tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
-                        retransmitQueue.clear()
+                        outgoingBuffer.clear()
                         return@runBlocking emptyList<Packet>()
                     } else {
                         // drop the segment and return
@@ -532,39 +539,41 @@ class TcpStateMachine(
                     transmissionControlBlock!!.irs = tcpHeader.sequenceNumber
                     if (tcpHeader.isAck()) {
                         transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                        removeAckedPacketsFromRetransmit()
-                    }
-                    if (transmissionControlBlock!!.snd_una > transmissionControlBlock!!.iss) {
-                        logger.debug("Received SYN-ACK in SYN_SENT state, transitioning to ESTABLISHED: $tcpHeader")
-                        // RFC9293: If the ACK acknowledges our SYN, enter ESTABLISHED state, form an ACK segment and send it back
-                        tcpState = TcpState.ESTABLISHED
+                        if (transmissionControlBlock!!.snd_una > transmissionControlBlock!!.iss) {
+                            logger.debug("Received SYN-ACK in SYN_SENT state, transitioning to ESTABLISHED: $tcpHeader")
+                            // RFC9293: If the ACK acknowledges our SYN, enter ESTABLISHED state, form an ACK segment and send it back
+                            tcpState.value = TcpState.ESTABLISHED
 
-                        // make sure we set the mss or use the default or we won't be able to
-                        // properly enqueue packets
-                        mss = mssOrDefault(tcpHeader, ipv4 = ipHeader is Ipv4Header)
-                        transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            val potentialMSS = mssOrDefault(tcpHeader, ipv4 = ipHeader is Ipv4Header)
+                            mss = min(potentialMSS.toUInt(), mtu.toUInt()).toUShort()
+                            transmissionControlBlock!!.iw = 2 * mss.toInt()
+                            transmissionControlBlock!!.cwnd = transmissionControlBlock!!.iw
+                            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
 
-                        // todo: Data or controls that were queued for
-                        //         transmission MAY be included.  Some TCP implementations
-                        //         suppress sending this segment when the received segment
-                        //         contains data that will anyways generate an acknowledgment in
-                        //         the later processing steps, saving this extra acknowledgment of
-                        //         the SYN from being sent.  If there are other controls or text
-                        //         in the segment, then continue processing at the sixth step
-                        //         under Section 3.10.7.4 where the URG bit is checked; otherwise,
-                        //         return.
-                        return@runBlocking listOf(
-                            TcpHeaderFactory.createAckPacket(
-                                ipHeader,
-                                tcpHeader,
-                                seqNumber = transmissionControlBlock!!.snd_nxt,
-                                ackNumber = transmissionControlBlock!!.rcv_nxt,
-                                transmissionControlBlock = transmissionControlBlock,
-                            ),
-                        )
+                            logger.debug("TCB: $transmissionControlBlock")
+
+                            // todo: Data or controls that were queued for
+                            //         transmission MAY be included.  Some TCP implementations
+                            //         suppress sending this segment when the received segment
+                            //         contains data that will anyways generate an acknowledgment in
+                            //         the later processing steps, saving this extra acknowledgment of
+                            //         the SYN from being sent.  If there are other controls or text
+                            //         in the segment, then continue processing at the sixth step
+                            //         under Section 3.10.7.4 where the URG bit is checked; otherwise,
+                            //         return.
+                            return@runBlocking listOf(
+                                TcpHeaderFactory.createAckPacket(
+                                    ipHeader,
+                                    tcpHeader,
+                                    seqNumber = transmissionControlBlock!!.snd_nxt,
+                                    ackNumber = transmissionControlBlock!!.rcv_nxt,
+                                    transmissionControlBlock = transmissionControlBlock,
+                                ),
+                            )
+                        }
                     } else {
                         logger.debug("Received SYN in SYN_SENT state, transitioning to SYN_RECEIVED: $tcpHeader")
-                        tcpState = TcpState.SYN_RECEIVED
+                        tcpState.value = TcpState.SYN_RECEIVED
                         transmissionControlBlock!!.snd_wnd = tcpHeader.windowSize
                         transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
                         transmissionControlBlock!!.snd_wl2 = tcpHeader.acknowledgementNumber
@@ -630,17 +639,16 @@ class TcpStateMachine(
                         return@runBlocking if (transmissionControlBlock!!.passive_open) {
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                             logger.debug("Got RST in SYN_RECEIVED state with passive open, transitioning to LISTEN")
-                            retransmitQueue.clear()
-                            tcpState = TcpState.LISTEN
+                            outgoingBuffer.clear()
+                            tcpState.value = TcpState.LISTEN
                             emptyList<Packet>()
                         } else {
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                             logger.debug("Got RST in SYN_RECEIVED state with active open, transitioning to CLOSED")
-                            retransmitQueue.clear()
-                            tcpState = TcpState.CLOSED
+                            tcpState.value = TcpState.CLOSED
                             isClosed = true
                             transmissionControlBlock = null
-                            retransmitQueue.clear()
+                            outgoingBuffer.clear()
                             emptyList<Packet>()
                         }
                     }
@@ -653,7 +661,7 @@ class TcpStateMachine(
                         if (transmissionControlBlock!!.passive_open) {
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                             logger.debug("Got SYN in SYN_RECEIVED state, transitioning to LISTEN: {}", tcpHeader)
-                            tcpState = TcpState.LISTEN
+                            tcpState.value = TcpState.LISTEN
                             return@runBlocking emptyList<Packet>()
                         } else {
                             logger.debug("Got SYN in SYN_RECEIVED state, sending RST: {}", tcpHeader)
@@ -686,14 +694,11 @@ class TcpStateMachine(
                             tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_nxt
                         ) {
                             logger.debug("Received ACK in SYN_RECEIVED state, transitioning to ESTABLISHED")
-                            tcpState = TcpState.ESTABLISHED
+                            tcpState.value = TcpState.ESTABLISHED
                             transmissionControlBlock!!.snd_wnd = tcpHeader.windowSize
                             transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
                             transmissionControlBlock!!.snd_wl2 = tcpHeader.acknowledgementNumber
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-
-                            // not sure if this is necessary here
-                            removeAckedPacketsFromRetransmit()
 
                             // https://www.rfc-editor.org/rfc/rfc6298.txt first RTT measurement
                             val timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
@@ -729,9 +734,11 @@ class TcpStateMachine(
                             val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                             assert(payloadSize == payload.size.toUInt())
                             if (payload.isNotEmpty()) {
-                                // session.addPayloadForInternet(payload, payload.size)
                                 try {
-                                    session.channel.write(ByteBuffer.wrap(payload))
+                                    val buffer = ByteBuffer.wrap(payload)
+                                    while (buffer.hasRemaining()) {
+                                        session.channel.write(buffer)
+                                    }
                                 } catch (e: Exception) {
                                     val packet = session.close()
                                     if (packet != null) {
@@ -740,6 +747,7 @@ class TcpStateMachine(
                                         return@runBlocking emptyList()
                                     }
                                 }
+                                transmissionControlBlock!!.rcv_nxt += payload.size.toUInt()
                                 val ack =
                                     TcpHeaderFactory.createAckPacket(
                                         ipHeader,
@@ -758,20 +766,26 @@ class TcpStateMachine(
 
                             // 8th: check the FIN bit
                             if (tcpHeader.isFin()) {
-                                logger.debug("Received FIN in ESTABLISHED state, transitioning to CLOSE_WAIT: $tcpHeader")
+                                logger.debug("Received FIN in SYN_RECEIVED state, transitioning to CLOSE_WAIT: $tcpHeader")
                                 transmissionControlBlock!!.rcv_nxt =
                                     tcpHeader.sequenceNumber + 1u // advance RCV.NXT over the FIN
-                                tcpState = TcpState.CLOSE_WAIT
+                                tcpState.value = TcpState.CLOSE_WAIT
                                 transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                                return@runBlocking listOf(
+
+                                val ackPacket =
                                     TcpHeaderFactory.createAckPacket(
                                         ipHeader,
                                         tcpHeader,
                                         seqNumber = transmissionControlBlock!!.snd_nxt,
                                         ackNumber = transmissionControlBlock!!.rcv_nxt,
                                         transmissionControlBlock = transmissionControlBlock,
-                                    ),
-                                )
+                                    )
+                                val finPacket = session.close()
+                                if (finPacket != null) {
+                                    return@runBlocking listOf(ackPacket, finPacket)
+                                } else {
+                                    return@runBlocking listOf(ackPacket)
+                                }
                             }
                         } else {
                             // RFC9293: If the segment is not acceptable, form a reset segment and send it
@@ -798,7 +812,7 @@ class TcpStateMachine(
         // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
         // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
         // on the mutex
-        if (tcpState == TcpState.CLOSE_WAIT) {
+        if (tcpState.value == TcpState.CLOSE_WAIT) {
             // todo: figure out this encapsulation thing
             // return packets.plus(encapsulateSessionBuffer(session))
         }
@@ -862,10 +876,10 @@ class TcpStateMachine(
                                 tcpHeader,
                             )
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                            tcpState = TcpState.CLOSED
+                            tcpState.value = TcpState.CLOSED
                             isClosed = true
                             transmissionControlBlock = null
-                            retransmitQueue.clear()
+                            outgoingBuffer.clear()
                             return@runBlocking emptyList<Packet>()
                         }
 
@@ -916,9 +930,10 @@ class TcpStateMachine(
                     if (tcpHeader.isAck()) {
                         if (isAckAcceptable(tcpHeader)) {
                             logger.debug("Received ACK in ESTABLISHED state, updating snd_una: $tcpHeader")
-                            transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                            removeAckedPacketsFromRetransmit()
+                            val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
+                            transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                            advanceOutgoingBuffer(acceptedBytes)
                             updateTimestamp(tcpHeader)
                             updateCongestionState()
                             updateSendWindow(tcpHeader)
@@ -970,9 +985,11 @@ class TcpStateMachine(
                     val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
-                        // session.addPayloadForInternet(payload, payload.size)
                         try {
-                            session.channel.write(ByteBuffer.wrap(payload))
+                            val buffer = ByteBuffer.wrap(payload)
+                            while (buffer.hasRemaining()) {
+                                session.channel.write(buffer)
+                            }
                         } catch (e: Exception) {
                             val packet = session.close()
                             if (packet != null) {
@@ -981,6 +998,8 @@ class TcpStateMachine(
                                 return@runBlocking emptyList()
                             }
                         }
+                        logger.debug("Wrote ${payload.size} bytes to channel")
+                        transmissionControlBlock!!.rcv_nxt += payload.size.toUInt()
                         val ack =
                             TcpHeaderFactory.createAckPacket(
                                 ipHeader,
@@ -1005,18 +1024,23 @@ class TcpStateMachine(
                     if (tcpHeader.isFin()) {
                         logger.debug("Received FIN in ESTABLISHED state, transitioning to CLOSE_WAIT: $tcpHeader")
                         transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
-                        tcpState = TcpState.CLOSE_WAIT
+                        tcpState.value = TcpState.CLOSE_WAIT
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
 
-                        return@runBlocking listOf(
+                        val ackPacket =
                             TcpHeaderFactory.createAckPacket(
                                 ipHeader,
                                 tcpHeader,
                                 seqNumber = transmissionControlBlock!!.snd_nxt,
                                 ackNumber = transmissionControlBlock!!.rcv_nxt,
                                 transmissionControlBlock = transmissionControlBlock,
-                            ),
-                        )
+                            )
+                        val finPacket = session.close()
+                        if (finPacket != null) {
+                            return@runBlocking listOf(ackPacket, finPacket)
+                        } else {
+                            return@runBlocking listOf(ackPacket)
+                        }
                     }
                 }
                 // logger.warn("Shouldn't have got here")
@@ -1026,7 +1050,7 @@ class TcpStateMachine(
         // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
         // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
         // on the mutex
-        if (tcpState == TcpState.CLOSE_WAIT) {
+        if (tcpState.value == TcpState.CLOSE_WAIT) {
             // TODO figure out this encapulate thing
             // return packets.plus(encapsulateSessionBuffer(session))
         }
@@ -1089,10 +1113,10 @@ class TcpStateMachine(
                                 "Received RST in FIN_WAIT1 state, transitioning to CLOSED: {}",
                                 tcpHeader,
                             )
-                            tcpState = TcpState.CLOSED
+                            tcpState.value = TcpState.CLOSED
                             isClosed = true
                             transmissionControlBlock = null
-                            retransmitQueue.clear()
+                            outgoingBuffer.clear()
                             return@runBlocking emptyList<Packet>()
                         }
 
@@ -1142,9 +1166,10 @@ class TcpStateMachine(
                     // 5th: check ACK field
                     if (tcpHeader.isAck()) {
                         if (isAckAcceptable(tcpHeader)) {
-                            transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                            removeAckedPacketsFromRetransmit()
+                            val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
+                            transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                            advanceOutgoingBuffer(acceptedBytes)
                             updateTimestamp(tcpHeader)
                             updateCongestionState()
                             updateSendWindow(tcpHeader)
@@ -1177,7 +1202,7 @@ class TcpStateMachine(
                         if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
                             logger.debug("Received ACK for FIN in FIN_WAIT1 state, transitioning to FIN_WAIT2: $tcpHeader")
                             transmissionControlBlock!!.fin_acked = true
-                            tcpState = TcpState.FIN_WAIT_2
+                            tcpState.value = TcpState.FIN_WAIT_2
                         } else {
                             logger.debug(
                                 "didn't get ACK for FIN, expecting " +
@@ -1208,9 +1233,11 @@ class TcpStateMachine(
                     val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
-                        // session.addPayloadForInternet(payload, payload.size)
                         try {
-                            session.channel.write(ByteBuffer.wrap(payload))
+                            val buffer = ByteBuffer.wrap(payload)
+                            while (buffer.hasRemaining()) {
+                                session.channel.write(buffer)
+                            }
                         } catch (e: Exception) {
                             val packet = session.close()
                             if (packet != null) {
@@ -1219,6 +1246,7 @@ class TcpStateMachine(
                                 return@runBlocking emptyList()
                             }
                         }
+                        transmissionControlBlock!!.rcv_nxt += payload.size.toUInt()
                         val ack =
                             TcpHeaderFactory.createAckPacket(
                                 ipHeader,
@@ -1244,10 +1272,27 @@ class TcpStateMachine(
                             logger.debug("Received FIN after our FIN has been acked, transition to TIME_WAIT: $tcpHeader")
                             // TODO: turn off other timers?
                             transmissionControlBlock!!.time_wait_time_ms = System.currentTimeMillis()
-                            tcpState = TcpState.TIME_WAIT
+                            tcpState.value = TcpState.TIME_WAIT
+                            if (timeWaitJob != null) {
+                                timeWaitJob!!.cancel()
+                            }
+                            timeWaitJob =
+                                CoroutineScope(Dispatchers.IO).launch {
+                                    logger.debug("TIME_WAIT timer started")
+                                    delay((2 * MSL * 1000).toLong())
+                                    tcbMutex.withLock {
+                                        if (tcpState.value == TcpState.TIME_WAIT) {
+                                            logger.debug("TIME_WAIT timer expired, transitioning to CLOSED")
+                                            tcpState.value = TcpState.CLOSED
+                                            isClosed = true
+                                            transmissionControlBlock = null
+                                            outgoingBuffer.clear()
+                                        }
+                                    }
+                                }
                         } else {
                             logger.debug("Received FIN, but our's hasn't been ACK'd transitioning to CLOSING state: $tcpHeader")
-                            tcpState = TcpState.CLOSING
+                            tcpState.value = TcpState.CLOSING
                         }
                         return@runBlocking listOf(
                             TcpHeaderFactory.createAckPacket(
@@ -1266,7 +1311,7 @@ class TcpStateMachine(
         // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
         // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
         // on the mutex
-        if (tcpState == TcpState.TIME_WAIT || tcpState == TcpState.CLOSING) {
+        if (tcpState.value == TcpState.TIME_WAIT || tcpState.value == TcpState.CLOSING) {
             // todo figure out this encapsulate
             // return packets.plus(encapsulateSessionBuffer(session))
         }
@@ -1320,11 +1365,11 @@ class TcpStateMachine(
                             "Received RST in FIN_WAIT2 state, transitioning to CLOSED: {}",
                             tcpHeader,
                         )
-                        tcpState = TcpState.CLOSED
+                        tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                        retransmitQueue.clear()
+                        outgoingBuffer.clear()
                         return@runBlocking emptyList<Packet>()
                     }
 
@@ -1374,8 +1419,9 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
+                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                         transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                        removeAckedPacketsFromRetransmit()
+                        advanceOutgoingBuffer(acceptedBytes)
                         updateTimestamp(tcpHeader)
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
@@ -1429,9 +1475,11 @@ class TcpStateMachine(
                 val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                 assert(payloadSize == payload.size.toUInt())
                 if (payload.isNotEmpty()) {
-                    // session.addPayloadForInternet(payload, payload.size)
                     try {
-                        session.channel.write(ByteBuffer.wrap(payload))
+                        val buffer = ByteBuffer.wrap(payload)
+                        while (buffer.hasRemaining()) {
+                            session.channel.write(buffer)
+                        }
                     } catch (e: Exception) {
                         val packet = session.close()
                         if (packet != null) {
@@ -1440,6 +1488,7 @@ class TcpStateMachine(
                             return@runBlocking emptyList()
                         }
                     }
+                    transmissionControlBlock!!.rcv_nxt += payload.size.toUInt()
                     val ack =
                         TcpHeaderFactory.createAckPacket(
                             ipHeader,
@@ -1458,7 +1507,24 @@ class TcpStateMachine(
                     transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                     transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
                     transmissionControlBlock!!.time_wait_time_ms = System.currentTimeMillis()
-                    tcpState = TcpState.TIME_WAIT
+                    tcpState.value = TcpState.TIME_WAIT
+                    if (timeWaitJob != null) {
+                        timeWaitJob!!.cancel()
+                    }
+                    timeWaitJob =
+                        CoroutineScope(Dispatchers.IO).launch {
+                            logger.debug("TIME_WAIT timer started")
+                            delay((2 * MSL * 1000).toLong())
+                            tcbMutex.withLock {
+                                if (tcpState.value == TcpState.TIME_WAIT) {
+                                    logger.debug("TIME_WAIT timer expired, transitioning to CLOSED")
+                                    tcpState.value = TcpState.CLOSED
+                                    isClosed = true
+                                    transmissionControlBlock = null
+                                    outgoingBuffer.clear()
+                                }
+                            }
+                        }
                     return@runBlocking listOf(
                         TcpHeaderFactory.createAckPacket(
                             ipHeader,
@@ -1518,11 +1584,11 @@ class TcpStateMachine(
                             "Received RST in CLOSE-WAIT state, transitioning to CLOSED: {}",
                             tcpHeader,
                         )
-                        tcpState = TcpState.CLOSED
+                        tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                        retransmitQueue.clear()
+                        outgoingBuffer.clear()
                         return@runBlocking emptyList<Packet>()
                     }
 
@@ -1571,8 +1637,9 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
+                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                         transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                        removeAckedPacketsFromRetransmit()
+                        advanceOutgoingBuffer(acceptedBytes)
                         updateTimestamp(tcpHeader)
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
@@ -1605,7 +1672,24 @@ class TcpStateMachine(
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         logger.debug("Received ACK for FIN in CLOSE_WAIT state, transitioning to TIME_WAIT: $tcpHeader")
                         transmissionControlBlock!!.fin_acked = true
-                        tcpState = TcpState.TIME_WAIT
+                        tcpState.value = TcpState.TIME_WAIT
+                        if (timeWaitJob != null) {
+                            timeWaitJob!!.cancel()
+                        }
+                        timeWaitJob =
+                            CoroutineScope(Dispatchers.IO).launch {
+                                logger.debug("TIME_WAIT timer started")
+                                delay((2 * MSL * 1000).toLong())
+                                tcbMutex.withLock {
+                                    if (tcpState.value == TcpState.TIME_WAIT) {
+                                        logger.debug("TIME_WAIT timer expired, transitioning to CLOSED")
+                                        tcpState.value = TcpState.CLOSED
+                                        isClosed = true
+                                        transmissionControlBlock = null
+                                        outgoingBuffer.clear()
+                                    }
+                                }
+                            }
                     } else {
                         logger.debug(
                             "didn't get ACK for FIN, expecting " +
@@ -1698,11 +1782,11 @@ class TcpStateMachine(
                             "Received RST in CLOSING state, transitioning to CLOSED: {}",
                             tcpHeader,
                         )
-                        tcpState = TcpState.CLOSED
+                        tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                        retransmitQueue.clear()
+                        outgoingBuffer.clear()
                         return@runBlocking emptyList<Packet>()
                     }
 
@@ -1751,7 +1835,9 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
-                        removeAckedPacketsFromRetransmit()
+                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
+                        transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                        advanceOutgoingBuffer(acceptedBytes)
                         updateTimestamp(tcpHeader)
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
@@ -1785,7 +1871,24 @@ class TcpStateMachine(
                     if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
                         logger.debug("Received ACK for FIN in CLOSING state, transitioning to TIME_WAIT: $tcpHeader")
                         transmissionControlBlock!!.fin_acked = true
-                        tcpState = TcpState.TIME_WAIT
+                        tcpState.value = TcpState.TIME_WAIT
+                        if (timeWaitJob != null) {
+                            timeWaitJob!!.cancel()
+                        }
+                        timeWaitJob =
+                            CoroutineScope(Dispatchers.IO).launch {
+                                logger.debug("TIME_WAIT timer started")
+                                delay((2 * MSL * 1000).toLong())
+                                tcbMutex.withLock {
+                                    if (tcpState.value == TcpState.TIME_WAIT) {
+                                        logger.debug("TIME_WAIT timer expired, transitioning to CLOSED")
+                                        tcpState.value = TcpState.CLOSED
+                                        isClosed = true
+                                        transmissionControlBlock = null
+                                        outgoingBuffer.clear()
+                                    }
+                                }
+                            }
                     } else {
                         logger.debug(
                             "didn't get ACK for FIN, expecting " +
@@ -1879,11 +1982,11 @@ class TcpStateMachine(
                             "Received RST in CLOSING state, transitioning to CLOSED: {}",
                             tcpHeader,
                         )
-                        tcpState = TcpState.CLOSED
+                        tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                        retransmitQueue.clear()
+                        outgoingBuffer.clear()
                         return@runBlocking emptyList<Packet>()
                     }
 
@@ -1912,6 +2015,7 @@ class TcpStateMachine(
                 }
 
                 if (tcpHeader.isSyn()) {
+                    logger.debug("Got SYN in LAST_ACK state, sending challenge ACK: $tcpHeader")
                     // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
                     //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
                     //   state, deleting the TCP, queues flushed.
@@ -1938,10 +2042,10 @@ class TcpStateMachine(
                     if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
                         logger.debug("Received ACK for FIN in LAST_ACK state, transitioning to CLOSED: $tcpHeader")
                         transmissionControlBlock!!.fin_acked = true
-                        tcpState = TcpState.CLOSED
+                        tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
-                        retransmitQueue.clear()
+                        outgoingBuffer.clear()
                         return@runBlocking emptyList()
                     } else {
                         logger.warn(
@@ -1951,6 +2055,7 @@ class TcpStateMachine(
                         )
                     }
                 } else {
+                    logger.warn("Received non-ACK in LAST_ACK state, ignoring: $tcpHeader")
                     // if the ACK bit is off, drop the segment and return
                     return@runBlocking emptyList()
                 }
@@ -2037,10 +2142,10 @@ class TcpStateMachine(
                             "Received RST in TIME_WAIT state, transitioning to CLOSED: {}",
                             tcpHeader,
                         )
-                        tcpState = TcpState.CLOSED
+                        tcpState.value = TcpState.CLOSED
                         isClosed = true
                         transmissionControlBlock = null
-                        retransmitQueue.clear()
+                        outgoingBuffer.clear()
                         return@runBlocking emptyList<Packet>()
                     }
 
@@ -2100,10 +2205,10 @@ class TcpStateMachine(
                         transmissionControlBlock!!.cwnd = transmissionControlBlock!!.iw
                         logger.debug("Setting MSS to: $mss")
 
-                        // todo: 3.10.7.2: if the SYN bit is set, check the security.  If the security/
+                        // todo: 3.10.7.2: if the SYN bit is set, check the security.  If the security /
                         //         compartment on the incoming segment does not exactly match the
                         //         security/compartment in the TCB, then send a reset and return.
-                        retransmitQueue.clear() // just to be sure we start in a fresh state
+                        // retransmitQueue.clear() // just to be sure we start in a fresh state
                         transmissionControlBlock!!.rcv_nxt = tcpHeader.sequenceNumber + 1u
                         transmissionControlBlock!!.irs = tcpHeader.sequenceNumber
                         transmissionControlBlock!!.iss =
@@ -2131,7 +2236,7 @@ class TcpStateMachine(
                         )
                         transmissionControlBlock!!.snd_nxt = transmissionControlBlock!!.iss + 1u
                         transmissionControlBlock!!.snd_una = transmissionControlBlock!!.iss
-                        tcpState = TcpState.SYN_RECEIVED
+                        tcpState.value = TcpState.SYN_RECEIVED
 //                        session.lastTransportHeader = tcpHeader
 //                        session.lastIpHeader = ipHeader
                         return@runBlocking listOf(response)
@@ -2156,7 +2261,9 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
-                        removeAckedPacketsFromRetransmit()
+                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
+                        transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
+                        advanceOutgoingBuffer(acceptedBytes)
                         updateTimestamp(tcpHeader)
                         updateCongestionState()
                         updateSendWindow(tcpHeader)
@@ -2229,6 +2336,30 @@ class TcpStateMachine(
     }
 
     /**
+     * Advances the buffer by numBytes and compacts it. After this is run, the buffer position will be where it should
+     * write to next. The limit will be set to the capacity.
+     */
+    private fun advanceOutgoingBuffer(numBytes: Int) {
+        if (numBytes <= 0) {
+            return
+        }
+        runBlocking {
+            outgoingMutex.withLock {
+                logger.debug("Received ACK for $numBytes bytes")
+                if (outgoingBuffer.position() != 0) {
+                    // if we're not already at the starting position, we're at the spot we should write to next, we need to
+                    // get it back into reading mode
+                    outgoingBuffer.flip()
+                }
+                outgoingBuffer.position(numBytes)
+
+                // put it back into writing mode when we're done
+                outgoingBuffer.compact()
+            }
+        }
+    }
+
+    /**
      * This should be called after we accept an ACK in order to go back through the retransmit
      * queue and prune any packets that have been fully acknowledged. This has been pulled out of
      * `establishedProcessAck` because it must be done when we accept the SYN-ACK packet which is
@@ -2246,7 +2377,7 @@ class TcpStateMachine(
             val packet = retransmitQueue.peek() ?: break
             val previousTcpHeader = packet.nextHeaders as TcpHeader
 
-            if (tcpState == TcpState.FIN_WAIT_1 && previousTcpHeader.isFin()) {
+            if (tcpState.value == TcpState.FIN_WAIT_1 && previousTcpHeader.isFin()) {
                 // FIN_WAIT_1 is a special case where we have sent a FIN and are waiting for an ACK
                 // but we have not yet received the FIN from the other side. In this case, we should
                 // not remove the FIN from the retransmit queue until we receive the FIN from the
@@ -2517,47 +2648,111 @@ class TcpStateMachine(
         }
     }
 
-    fun encapsulateBuffer(
-        buffer: ByteBuffer,
-        swapSourceDestination: Boolean = false,
-    ): List<Packet> {
+    /**
+     * Attempts to enqueue all of the data in the buffer into the outgoing buffer. If the buffer fills up, it will
+     * enqueue as much as it can. Returns the number of bytes enqueued. Also sets the position of the buffer to the
+     * next byte to be read (ie, the byte after the last enqueued byte)
+     */
+    fun enqueueOutgoingData(buffer: ByteBuffer): Int {
         return runBlocking {
-            tcbMutex.withLock {
-                val packets = ArrayList<Packet>()
+            outgoingMutex.withLock {
+                logger.debug("Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                // if we've previously compacted we won't get into here (just to reset us from read mode to write mode)
+                if (outgoingBuffer.limit() != outgoingBuffer.capacity()) {
+                    // this should set us up so that we are writing right after the last byte we wrote previously
+                    // with a limit of the rest of the buffer
+                    outgoingBuffer.compact()
+                    logger.debug("After compact Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                }
+                val bytesToEnqueue = min(buffer.remaining(), outgoingBuffer.remaining())
+                outgoingBuffer.put(buffer.array(), buffer.position(), bytesToEnqueue)
+                buffer.position(buffer.position() + bytesToEnqueue)
+                logger.debug("After write Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                return@runBlocking bytesToEnqueue
+            }
+        }
+    }
 
-                val sourceAddress = if (swapSourceDestination) session.destinationAddress else session.sourceAddress
-                val destinationAddress = if (swapSourceDestination) session.sourceAddress else session.destinationAddress
-                val sourcePort = if (swapSourceDestination) session.destinationPort else session.sourcePort
-                val destinationPort = if (swapSourceDestination) session.sourcePort else session.destinationPort
+    /**
+     * We assume that the buffer is positioned after the data to be encapsulated. Once it's been encapsulated, it's
+     * removed from this buffer. The encapsulated packets are returned and also stored in the retransmit queue. Packets
+     * are cleared from the retransmit queue when they are fully acknowledged.
+     *
+     * TODO: determine what happens if they are partially acknowledged.
+     *
+     * @param swapSourceDestination if true, the source and destination addresses and ports will be swapped in the
+     * encapsulated packets. The only time we want to do this is when we are sending packets from the tcp into the proxy
+     * server. This is because the source and destination are reversed in the proxy server.
+     */
+    fun encapsulateOutgoingData(swapSourceDestination: Boolean = false): List<Packet> {
+        return runBlocking {
+            val packets = ArrayList<Packet>()
+            val sourceAddress = if (swapSourceDestination) session.destinationAddress else session.sourceAddress
+            val destinationAddress = if (swapSourceDestination) session.sourceAddress else session.destinationAddress
+            val sourcePort = if (swapSourceDestination) session.destinationPort else session.sourcePort
+            val destinationPort = if (swapSourceDestination) session.sourcePort else session.destinationPort
 
-                val tcpHeader = TcpHeader(sourcePort = sourcePort, destinationPort = destinationPort)
-                val ipHeader =
-                    if (sourceAddress is Inet4Address) {
-                        Ipv4Header(
-                            sourceAddress = sourceAddress,
-                            destinationAddress = destinationAddress as Inet4Address,
-                            totalLength =
-                                (
-                                    Ipv4Header.IP4_MIN_HEADER_LENGTH +
-                                        tcpHeader.getHeaderLength()
-                                ).toUShort(),
-                            protocol = IpType.TCP.value,
-                        )
-                    } else {
-                        Ipv6Header(
-                            sourceAddress = sourceAddress as Inet6Address,
-                            destinationAddress = destinationAddress as Inet6Address,
-                            payloadLength = tcpHeader.getHeaderLength(),
-                            protocol = IpType.TCP.value,
-                        )
+            val tcpHeader = TcpHeader(sourcePort = sourcePort, destinationPort = destinationPort)
+            val ipHeader =
+                if (sourceAddress is Inet4Address) {
+                    Ipv4Header(
+                        sourceAddress = sourceAddress,
+                        destinationAddress = destinationAddress as Inet4Address,
+                        totalLength =
+                            (
+                                Ipv4Header.IP4_MIN_HEADER_LENGTH +
+                                    tcpHeader.getHeaderLength()
+                            ).toUShort(),
+                        protocol = IpType.TCP.value,
+                    )
+                } else {
+                    Ipv6Header(
+                        sourceAddress = sourceAddress as Inet6Address,
+                        destinationAddress = destinationAddress as Inet6Address,
+                        payloadLength = tcpHeader.getHeaderLength(),
+                        protocol = IpType.TCP.value,
+                    )
+                }
+
+            outgoingMutex.withLock {
+                do {
+                    logger.debug("before flip Buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                    var isPush = false
+                    outgoingBuffer.flip()
+                    logger.debug("after flip Buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                    // logger.debug("REMAINING: ${session.sendBuffer.remaining()}, MSS: ${session.tcpStateMachine.mss}")
+                    // logger.debug("Session buffer: \n{}", BufferUtil.toHexString(session.sendBuffer, 0, session.sendBuffer.limit()))
+                    if (outgoingBuffer.remaining() == 0) {
+                        // handle case where we have an empty buffer (the first iteration of
+                        // the loop will show remaining because its before we've flipped the first time
+                        outgoingBuffer.compact()
+                        break
                     }
 
-                while (buffer.hasRemaining()) {
-                    // todo: need to reduce further if there are any Ipv6 extension headers
-                    val bytesToTake = min(mss.toInt(), buffer.remaining())
-                    logger.debug("Taking $bytesToTake bytes, have ${buffer.remaining()} bytes remaining")
-                    val payloadCopy = ByteArray(bytesToTake)
-                    buffer.get(payloadCopy)
+                    val availableSendBytes =
+                        tcbMutex.withLock {
+                            val cwnd =
+                                session.tcpStateMachine.transmissionControlBlock!!
+                                    .cwnd
+                                    .toUInt()
+                            val outstandingBytes = session.tcpStateMachine.transmissionControlBlock!!.outstandingBytes()
+                            if (cwnd <= outstandingBytes) {
+                                logger.warn("Hit cwnd limit, outstanding bytes: $outstandingBytes holding off on more packets for now")
+                                outgoingBuffer.compact()
+                                return@runBlocking packets
+                            }
+                            cwnd - outstandingBytes
+                        }
+                    logger.debug("Available send bytes: $availableSendBytes")
+                    // may need to adjust this to be the minimum of the mss and the remaining bytes
+                    val payloadSize = min(availableSendBytes.toInt(), outgoingBuffer.remaining())
+                    logger.debug("Actual send bytes: $payloadSize")
+                    val payloadCopy = ByteArray(payloadSize)
+                    outgoingBuffer.get(payloadCopy)
+                    if (outgoingBuffer.remaining() == 0) {
+                        isPush = true
+                    }
+
                     val latestAck =
                         if (session.lastestACKs.isNotEmpty()) {
                             (
@@ -2568,22 +2763,38 @@ class TcpStateMachine(
                         } else {
                             transmissionControlBlock!!.rcv_nxt
                         }
-
                     val packet =
                         TcpHeaderFactory.createAckPacket(
                             ipHeader = ipHeader,
                             tcpHeader = tcpHeader,
                             seqNumber = session.tcpStateMachine.transmissionControlBlock!!.snd_nxt,
                             ackNumber = latestAck,
+                            isPsh = isPush,
                             payload = ByteBuffer.wrap(payloadCopy),
                             transmissionControlBlock = transmissionControlBlock,
                         )
-                    session.tcpStateMachine.transmissionControlBlock!!.snd_nxt += bytesToTake.toUShort()
-                    packets.add(packet)
-                }
 
-                return@runBlocking packets
+                    if (session.tcpStateMachine.transmissionControlBlock!!
+                            .snd_nxt
+                            .toULong() + payloadSize.toULong() >
+                        UInt.MAX_VALUE.toULong()
+                    ) {
+                        logger.debug("Wraparound case in encapsulateOutgoingData")
+                        val carryOver =
+                            (
+                                session.tcpStateMachine.transmissionControlBlock!!
+                                    .snd_nxt
+                                    .toULong() + payloadSize.toULong()
+                            ) -
+                                UInt.MAX_VALUE.toULong()
+                        session.tcpStateMachine.transmissionControlBlock!!.snd_nxt = carryOver.toUInt()
+                    } else {
+                        session.tcpStateMachine.transmissionControlBlock!!.snd_nxt += payloadSize.toUShort()
+                    }
+                    packets.add(packet)
+                } while (outgoingBuffer.hasRemaining())
             }
+            return@runBlocking packets
         }
     }
 
