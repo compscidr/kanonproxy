@@ -41,8 +41,12 @@ abstract class TcpSession(
     var lastestACKs = CopyOnWriteArrayList<RetransmittablePacket>()
 
     override fun handlePayloadFromInternet(payload: ByteArray) {
-        val packets = tcpStateMachine.encapsulateBuffer(ByteBuffer.wrap(payload))
-        returnQueue.addAll(packets)
+        val buffer = ByteBuffer.wrap(payload)
+        while (buffer.hasRemaining()) {
+            tcpStateMachine.enqueueOutgoingData(buffer)
+            val packets = tcpStateMachine.encapsulateOutgoingData()
+            returnQueue.addAll(packets)
+        }
     }
 
     /**
@@ -54,7 +58,7 @@ abstract class TcpSession(
      * else do nothing.
      */
     fun close(swapSourceAndDestination: Boolean = true): Packet? {
-        logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState}")
+        logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value}")
         val finPacket =
             TcpHeaderFactory.createFinPacket(
                 sourceAddress,
@@ -66,17 +70,22 @@ abstract class TcpSession(
                 swapSourceAndDestination,
                 transmissionControlBlock = tcpStateMachine.transmissionControlBlock,
             )
-        when (tcpStateMachine.tcpState) {
+        tcpStateMachine.transmissionControlBlock!!.snd_nxt += 1u
+        tcpStateMachine.transmissionControlBlock!!.fin_seq = tcpStateMachine.transmissionControlBlock!!.snd_nxt
+        when (tcpStateMachine.tcpState.value) {
             TcpState.LISTEN, TcpState.SYN_SENT -> {
-                tcpStateMachine.tcpState = TcpState.CLOSED
+                logger.debug("Transitioning to CLOSED")
+                tcpStateMachine.tcpState.value = TcpState.CLOSED
                 tcpStateMachine.transmissionControlBlock = null
             }
             TcpState.SYN_RECEIVED, TcpState.ESTABLISHED -> {
-                tcpStateMachine.tcpState = TcpState.FIN_WAIT_1
+                logger.debug("Transitioning to FIN_WAIT_1")
+                tcpStateMachine.tcpState.value = TcpState.FIN_WAIT_1
                 return finPacket
             }
             TcpState.CLOSE_WAIT -> {
-                tcpStateMachine.tcpState = TcpState.LAST_ACK
+                logger.debug("Transitioning to LAST_ACK")
+                tcpStateMachine.tcpState.value = TcpState.LAST_ACK
                 return finPacket
             }
             else -> {

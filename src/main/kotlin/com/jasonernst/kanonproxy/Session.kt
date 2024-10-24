@@ -69,8 +69,8 @@ abstract class Session(
             readBuffer.flip()
             val payload = ByteArray(len)
             readBuffer.get(payload, 0, len)
-            handlePayloadFromInternet(payload)
             logger.debug("Read {} bytes from {}", len, channel)
+            handlePayloadFromInternet(payload)
             readBuffer.clear()
         }
         return len

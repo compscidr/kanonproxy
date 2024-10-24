@@ -4,6 +4,7 @@ import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.net.InetAddress
@@ -27,7 +28,7 @@ class AnonymousTcpSession(
         protector = protector,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    override val tcpStateMachine: TcpStateMachine = TcpStateMachine(TcpState.LISTEN, mtu, this)
+    override val tcpStateMachine: TcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.LISTEN), mtu, this)
 
     // note: android doesn't suppor the open function with the protocol family, so just open like this and assume
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
@@ -36,7 +37,7 @@ class AnonymousTcpSession(
 
     override fun handleReturnTrafficLoop(): Int {
         val len = super.handleReturnTrafficLoop()
-        if (len == 0 && tcpStateMachine.tcpState == TcpState.CLOSE_WAIT) {
+        if (len == 0 && tcpStateMachine.tcpState.value == TcpState.CLOSE_WAIT) {
             close()
         }
         return len
