@@ -2385,7 +2385,7 @@ class TcpStateMachine(
                 continue
             }
 
-            if (previousTcpHeader.sequenceNumber + packet.payload.size.toUInt()
+            if (previousTcpHeader.sequenceNumber + packet.payload!!.size.toUInt()
                 <= transmissionControlBlock!!.snd_una
             ) {
                 logger.trace(
