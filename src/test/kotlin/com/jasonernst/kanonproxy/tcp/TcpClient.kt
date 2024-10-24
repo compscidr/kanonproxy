@@ -60,8 +60,8 @@ class TcpClient(
 
     init {
         // uncomment for debugging with wireshark
-        packetDumper.start()
-        Thread.sleep(5000) // give some time to connect
+        // packetDumper.start()
+        // Thread.sleep(5000) // give some time to connect
 
         isRunning = true
 
@@ -259,6 +259,8 @@ class TcpClient(
                 }
             }
         }
+        // give a little extra time for the ACK for the FIN to from the other side to be enqueued and sent out
+        Thread.sleep(100)
         runBlocking {
             isRunning = false
             outgoingPackets.add(SentinelPacket)
@@ -268,7 +270,7 @@ class TcpClient(
             writeJob.cancelAndJoin()
             logger.debug("Jobs finished")
         }
-        packetDumper.stop()
+        // packetDumper.stop()
         if (waitForTimeWait) {
             if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
                 throw RuntimeException("Failed to close")
