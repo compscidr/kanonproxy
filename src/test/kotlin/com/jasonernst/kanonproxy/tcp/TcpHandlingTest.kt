@@ -147,5 +147,39 @@ class TcpHandlingTest {
         tcpClient2.closeClient()
     }
 
+    @Test fun ipv4TcpSendRecvMultipleEcho() {
+        val payload = "Payload1".toByteArray()
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        tcpClient.connect()
+
+        // send, recv
+        tcpClient.send(ByteBuffer.wrap(payload))
+        val recvBuffer = ByteBuffer.allocate(payload.size)
+        tcpClient.recv(recvBuffer)
+
+        // send, recv
+        val payload2 = "Payload2".toByteArray()
+        tcpClient.send(ByteBuffer.wrap(payload2))
+        val recvBuffer2 = ByteBuffer.allocate(payload2.size)
+        tcpClient.recv(recvBuffer2)
+
+        // send, send, rcv
+        tcpClient.send(ByteBuffer.wrap(payload))
+        tcpClient.send(ByteBuffer.wrap(payload2))
+        val recvBuffer3 = ByteBuffer.allocate(payload.size + payload2.size)
+        tcpClient.recv(recvBuffer3)
+
+        tcpClient.closeClient()
+
+        assertArrayEquals(payload, recvBuffer.array())
+        assertArrayEquals(payload2, recvBuffer2.array())
+        assertArrayEquals(payload + payload2, recvBuffer3.array())
+    }
+
     // todo: ipv6 tests
 }
