@@ -9,6 +9,7 @@ import com.jasonernst.icmp_common.v4.ICMPv4EchoPacket
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
 import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
+import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpState
 import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
@@ -59,6 +60,10 @@ class KAnonProxy(
     private val isRunning = AtomicBoolean(false)
     private var retransmitJob: Job? = null
 
+    companion object {
+        const val STALE_SESSION_MS = 5000L
+    }
+
     fun start() {
         if (isRunning.get()) {
             logger.warn("KAnonProxy is already running")
@@ -68,7 +73,7 @@ class KAnonProxy(
         retransmitJob =
             CoroutineScope(Dispatchers.IO).launch {
                 Thread.currentThread().name = "KanonProxy TCP Retransmit Thread"
-                tcpRetransmitThread()
+                sessionMaintenanceThread()
             }
         logger.debug("KAnonProxy started")
     }
@@ -149,20 +154,45 @@ class KAnonProxy(
                 ipHeader.protocol,
             )
         val session =
-            sessionTableBySessionKey.getOrPut(key) {
-                isNewSession = true
-                Session.getSession(
-                    ipHeader.sourceAddress,
-                    transportHeader.sourcePort,
-                    ipHeader.destinationAddress,
-                    transportHeader.destinationPort,
-                    ipHeader.protocol,
-                    outgoingQueue,
-                    protector,
-                )
+            try {
+                sessionTableBySessionKey.getOrPut(key) {
+                    isNewSession = true
+                    Session.getSession(
+                        ipHeader.sourceAddress,
+                        transportHeader.sourcePort,
+                        ipHeader.destinationAddress,
+                        transportHeader.destinationPort,
+                        ipHeader.protocol,
+                        outgoingQueue,
+                        protector,
+                    )
+                }
+            } catch (e: Exception) {
+                // this should catch any exceptions trying to make the connection for a TCP or UDP session
+                logger.error("Error creating session: ${e.message}")
+                val code =
+                    when (ipHeader) {
+                        is Ipv4Header -> ICMPv4DestinationUnreachableCodes.HOST_UNREACHABLE
+                        is Ipv6Header -> ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
+                        else -> throw IllegalArgumentException("Unknown IP protocol: " + ipHeader::class.java.simpleName)
+                    }
+                val response =
+                    IcmpFactory.createDestinationUnreachable(
+                        code,
+                        // source address for the ICMP header, send it back to the client as if its the clients own OS
+                        // telling it that its unreachable
+                        ipHeader.sourceAddress,
+                        ipHeader,
+                        transportHeader,
+                        payload,
+                    )
+                outgoingQueue.add(response)
+                return
             }
         if (isNewSession) {
             logger.info("New session: {} with payload size: {}", session, payload.size)
+        } else {
+            session.lastHeard = System.currentTimeMillis()
         }
         when (transportHeader) {
             is UdpHeader -> {
@@ -285,10 +315,15 @@ class KAnonProxy(
         return outgoingQueue.take()
     }
 
-    private suspend fun tcpRetransmitThread() {
+    private suspend fun sessionMaintenanceThread() {
         while (isRunning.get()) {
             val startTime = System.currentTimeMillis()
             for (session in sessionTableBySessionKey.values) {
+                if (session.lastHeard < System.currentTimeMillis() - STALE_SESSION_MS) {
+                    logger.warn("Session {} is stale, removing", session)
+                    sessionTableBySessionKey.remove(session.getKey())
+                    continue
+                }
                 if (session is TcpSession) {
                     processRetransmits(session)
                     processReverseAcks(session)

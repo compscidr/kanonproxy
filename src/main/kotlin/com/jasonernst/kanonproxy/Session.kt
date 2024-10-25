@@ -22,6 +22,7 @@ abstract class Session(
     private val logger = LoggerFactory.getLogger(javaClass)
     abstract val channel: ByteChannel
     private val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+    var lastHeard = System.currentTimeMillis()
 
     companion object {
         fun getKey(
@@ -66,6 +67,7 @@ abstract class Session(
         // logger.debug("Waiting for return traffic on {}", this)
         val len = channel.read(readBuffer)
         if (len > 0) {
+            lastHeard = System.currentTimeMillis()
             readBuffer.flip()
             val payload = ByteArray(len)
             readBuffer.get(payload, 0, len)
