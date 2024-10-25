@@ -10,9 +10,12 @@ import com.jasonernst.knet.transport.udp.UdpHeader
 import com.jasonernst.testservers.server.UdpEchoServer
 import io.mockk.mockk
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.Timeout
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
@@ -22,19 +25,34 @@ import java.net.InetAddress
 @Timeout(20)
 class UdpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
 
     companion object {
         val udpEchoServer: UdpEchoServer = UdpEchoServer()
 
         @JvmStatic
-        @BeforeAll fun setup() {
+        @BeforeAll
+        fun setup() {
             udpEchoServer.start()
         }
 
         @JvmStatic
-        @AfterAll fun teardown() {
+        @AfterAll
+        fun teardown() {
             udpEchoServer.stop()
         }
+    }
+
+    @BeforeEach
+    fun setupEach(testInfo: TestInfo) {
+        logger.debug("Starting test ${testInfo.displayName}")
+        kAnonProxy.start()
+    }
+
+    @AfterEach
+    fun teardownEach(testInfo: TestInfo) {
+        logger.debug("Ending test ${testInfo.displayName}")
+        kAnonProxy.stop()
     }
 
     @Test fun testIpv4UdpPacketHandling() {
@@ -60,9 +78,7 @@ class UdpHandlingTest {
                 udpHeader,
                 payload,
             )
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         kAnonProxy.handlePackets(listOf(packet))
-
         val response = kAnonProxy.takeResponse()
         logger.debug("Got response: {}", response.nextHeaders)
         val parsedPayload = response.payload
@@ -87,9 +103,7 @@ class UdpHandlingTest {
                 udpHeader,
                 payload,
             )
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         kAnonProxy.handlePackets(listOf(packet))
-
         val response = kAnonProxy.takeResponse()
         logger.debug("Got response: {}", response.nextHeaders)
         val parsedPayload = response.payload

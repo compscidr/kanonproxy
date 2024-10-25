@@ -22,10 +22,10 @@ import java.nio.ByteBuffer
 @Timeout(20)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
 
     companion object {
         val tcpEchoServer = TcpEchoServer()
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
 
         @JvmStatic
         @BeforeAll

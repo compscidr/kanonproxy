@@ -10,8 +10,11 @@ import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
 import io.mockk.mockk
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.Timeout
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
@@ -21,6 +24,19 @@ import java.net.InetAddress
 @Timeout(20)
 class IcmpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
+
+    @BeforeEach
+    fun setupEach(testInfo: TestInfo) {
+        logger.debug("Starting test ${testInfo.displayName}")
+        kAnonProxy.start()
+    }
+
+    @AfterEach
+    fun teardownEach(testInfo: TestInfo) {
+        logger.debug("Ending test ${testInfo.displayName}")
+        kAnonProxy.stop()
+    }
 
     @Test fun testIcmpV4PacketHandling() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
@@ -48,10 +64,7 @@ class IcmpHandlingTest {
                 ),
                 ByteArray(0),
             )
-
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         kAnonProxy.handlePackets(listOf(packet))
-
         val response = kAnonProxy.takeResponse()
         assertTrue(response.nextHeaders is ICMPNextHeaderWrapper)
         logger.debug("Got response: {}", response.nextHeaders)
@@ -80,10 +93,7 @@ class IcmpHandlingTest {
                 ),
                 ByteArray(0),
             )
-
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         kAnonProxy.handlePackets(listOf(packet))
-
         val response = kAnonProxy.takeResponse()
         assertTrue(response.nextHeaders is ICMPNextHeaderWrapper)
         logger.debug("Got response: {}", response.nextHeaders)
