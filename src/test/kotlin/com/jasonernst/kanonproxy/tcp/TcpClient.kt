@@ -11,7 +11,6 @@ import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.takeWhile
@@ -22,6 +21,7 @@ import org.slf4j.LoggerFactory
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
+import java.util.*
 import java.util.concurrent.LinkedBlockingDeque
 
 /**
@@ -43,6 +43,7 @@ class TcpClient(
         returnQueue = LinkedBlockingDeque(),
         mockk(relaxed = true),
     ) {
+    private val clientId = UUID.randomUUID()
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.CLOSED), mtu, this)
 
@@ -67,13 +68,13 @@ class TcpClient(
 
         readJob =
             CoroutineScope(Dispatchers.IO).launch {
-                Thread.currentThread().name = "TcpClient writer"
+                Thread.currentThread().name = "TcpClient writer $clientId"
                 writerThread()
             }
 
         writeJob =
             CoroutineScope(Dispatchers.IO).launch {
-                Thread.currentThread().name = "TcpClient reader"
+                Thread.currentThread().name = "TcpClient reader $clientId"
                 readerThread()
             }
     }
@@ -85,7 +86,7 @@ class TcpClient(
                 logger.debug("Got sentinel packet, stopping")
                 break
             }
-            logger.debug("Sending to proxy: {}", packet)
+            logger.debug("Sending to proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet)
             packetDumper.dumpBuffer(
                 ByteBuffer.wrap(packet.toByteArray()),
                 etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
@@ -105,7 +106,7 @@ class TcpClient(
                 logger.debug("missing header(s) or payload, skipping packet")
                 continue
             }
-            logger.debug("Received from proxy: {}", packet)
+            logger.debug("Received from proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet)
             packetDumper.dumpBuffer(
                 ByteBuffer.wrap(packet.toByteArray()),
                 etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
@@ -148,7 +149,7 @@ class TcpClient(
                 mtu,
                 tcpStateMachine.transmissionControlBlock!!,
             )
-        logger.debug("Sending SYN to proxy: ${synPacket.nextHeaders}")
+        logger.debug("$clientId Sending SYN to proxy: ${synPacket.nextHeaders}")
         outgoingPackets.add(synPacket)
 
         // this will block until we reach the established state or closed state, or until a timeout occurs
@@ -159,12 +160,12 @@ class TcpClient(
                     .takeWhile {
                         it != TcpState.ESTABLISHED && it != TcpState.CLOSED
                     }.collect {
-                        logger.debug("State: $it")
+                        logger.debug("$clientId State: $it")
                     }
             }
         }
         if (tcpStateMachine.tcpState.value != TcpState.ESTABLISHED) {
-            throw RuntimeException("Failed to connect")
+            throw RuntimeException("$clientId Failed to connect")
         }
     }
 
@@ -265,9 +266,9 @@ class TcpClient(
             isRunning = false
             outgoingPackets.add(SentinelPacket)
             logger.debug("Waiting for readjob to finish")
-            readJob.cancelAndJoin()
+            readJob.join()
             logger.debug("Waiting for writejob to finish")
-            writeJob.cancelAndJoin()
+            writeJob.join()
             logger.debug("Jobs finished")
         }
         // packetDumper.stop()

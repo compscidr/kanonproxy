@@ -23,8 +23,11 @@ import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.udp.UdpHeader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
@@ -33,6 +36,7 @@ import java.net.Inet6Address
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * @param icmp The ICMP object that will be used to send and receive ICMP packets. Depending on if
@@ -52,11 +56,32 @@ class KAnonProxy(
     // not private for testing
     val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
 
-    init {
-        CoroutineScope(Dispatchers.IO).launch {
-            Thread.currentThread().name = "KanonProxy TCP Retransmit Thread"
-            tcpRetransmitThread()
+    private val isRunning = AtomicBoolean(false)
+    private var retransmitJob: Job? = null
+
+    fun start() {
+        if (isRunning.get()) {
+            logger.warn("KAnonProxy is already running")
+            return
         }
+        isRunning.set(true)
+        retransmitJob =
+            CoroutineScope(Dispatchers.IO).launch {
+                Thread.currentThread().name = "KanonProxy TCP Retransmit Thread"
+                tcpRetransmitThread()
+            }
+        logger.debug("KAnonProxy started")
+    }
+
+    fun stop() {
+        logger.debug("Stopping KAnonProxy")
+        isRunning.set(false)
+        runBlocking {
+            retransmitJob?.cancelAndJoin()
+        }
+        outgoingQueue.clear()
+        sessionTableBySessionKey.clear()
+        logger.debug("KAnonProxy stopped")
     }
 
     /**
@@ -71,6 +96,10 @@ class KAnonProxy(
      *
      */
     fun handlePackets(packets: List<Packet>) {
+        if (!isRunning.get()) {
+            logger.warn("KAnonProxy is not running, ignoring packets")
+            return
+        }
         // TODO: handle case where two+ clients are using the same source, destination IP, port + proto
         //   probably need a UUID, or perhaps the VPN client address if this is used as a VPN server
         //   note: this isn't needed for a TUN/TAP adapter or a packet dumper on Android since there
@@ -248,10 +277,16 @@ class KAnonProxy(
     /**
      * This function will block until a packet is available.
      */
-    fun takeResponse(): Packet = outgoingQueue.take()
+    fun takeResponse(): Packet {
+        if (!isRunning.get()) {
+            logger.warn("KAnonProxy is not running, ignoring packets")
+            return SentinelPacket
+        }
+        return outgoingQueue.take()
+    }
 
     private suspend fun tcpRetransmitThread() {
-        while (true) {
+        while (isRunning.get()) {
             val startTime = System.currentTimeMillis()
             for (session in sessionTableBySessionKey.values) {
                 if (session is TcpSession) {
@@ -305,5 +340,10 @@ class KAnonProxy(
                 outgoingQueue.put(reverseAck)
             }
         }
+    }
+
+    // todo: when we have per session queues, we will need a parameter like a key
+    fun disconnectSession() {
+        outgoingQueue.put(SentinelPacket)
     }
 }
