@@ -931,9 +931,8 @@ class TcpStateMachine(
                         if (isAckAcceptable(tcpHeader)) {
                             logger.debug("Received ACK in ESTABLISHED state, updating snd_una: $tcpHeader")
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                            val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                             transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                            advanceOutgoingBuffer(acceptedBytes)
+                            removeAckedPacketsFromRetransmit()
                             updateTimestamp(tcpHeader)
                             updateCongestionState()
                             updateSendWindow(tcpHeader)
@@ -1167,9 +1166,8 @@ class TcpStateMachine(
                     if (tcpHeader.isAck()) {
                         if (isAckAcceptable(tcpHeader)) {
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                            val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                             transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                            advanceOutgoingBuffer(acceptedBytes)
+                            removeAckedPacketsFromRetransmit()
                             updateTimestamp(tcpHeader)
                             updateCongestionState()
                             updateSendWindow(tcpHeader)
@@ -1419,9 +1417,8 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
-                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                         transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                        advanceOutgoingBuffer(acceptedBytes)
+                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
@@ -1637,9 +1634,8 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
-                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                         transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                        advanceOutgoingBuffer(acceptedBytes)
+                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
@@ -1835,9 +1831,8 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
-                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                         transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                        advanceOutgoingBuffer(acceptedBytes)
+                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
@@ -2260,9 +2255,8 @@ class TcpStateMachine(
                 // 5th: check ACK field
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
-                        val acceptedBytes = (tcpHeader.acknowledgementNumber - transmissionControlBlock!!.snd_una).toInt() - 1
                         transmissionControlBlock!!.snd_una = tcpHeader.acknowledgementNumber
-                        advanceOutgoingBuffer(acceptedBytes)
+                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
                         updateCongestionState()
                         updateSendWindow(tcpHeader)
@@ -2335,30 +2329,6 @@ class TcpStateMachine(
     }
 
     /**
-     * Advances the buffer by numBytes and compacts it. After this is run, the buffer position will be where it should
-     * write to next. The limit will be set to the capacity.
-     */
-    private fun advanceOutgoingBuffer(numBytes: Int) {
-        if (numBytes <= 0) {
-            return
-        }
-        runBlocking {
-            outgoingMutex.withLock {
-                logger.debug("Received ACK for $numBytes bytes")
-                if (outgoingBuffer.position() != 0) {
-                    // if we're not already at the starting position, we're at the spot we should write to next, we need to
-                    // get it back into reading mode
-                    outgoingBuffer.flip()
-                }
-                outgoingBuffer.position(numBytes)
-
-                // put it back into writing mode when we're done
-                outgoingBuffer.compact()
-            }
-        }
-    }
-
-    /**
      * This should be called after we accept an ACK in order to go back through the retransmit
      * queue and prune any packets that have been fully acknowledged. This has been pulled out of
      * `establishedProcessAck` because it must be done when we accept the SYN-ACK packet which is
@@ -2370,7 +2340,8 @@ class TcpStateMachine(
         // (5.3) When an ACK is received that acknowledges new data, restart the
         //         retransmission timer so that it will expire after RTO seconds
         //         (for the current value of RTO).
-        transmissionControlBlock!!.rto_expiry = System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000L).toLong()
+        transmissionControlBlock!!.rto_expiry =
+            System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000L).toLong()
         while (!retransmitQueue.isEmpty()) {
             // may be null if the session is shutting down
             val packet = retransmitQueue.peek() ?: break
@@ -2405,51 +2376,6 @@ class TcpStateMachine(
             transmissionControlBlock!!.rto_expiry = 0L
         }
     }
-
-    /**
-     * TODO: THIS IS ONLY ACTUALLY CALLED FROM A TEST!!! DETERMINE IF WE NEED IT, OR IF THE PROCESS TIMEOUT WILL WORK
-     *
-     * Should be called periodically from a thread to determine when to retransmit unACK'd stuff.
-     *
-     fun resendTimeouts(): List<Packet> {
-     // return emptyList()
-     val retransmits = ArrayList<Packet>()
-     while (!retransmitQueue.isEmpty()) {
-     // if the session is being re-established this can be null, so stop processing if
-     // this is the case
-     val packet = retransmitQueue.peek() ?: break
-     if (packet.lastSent == 0L) {
-     logger.error("Packet has never been sent, shouldn't get here: $packet")
-     // handle edge case where we haven't sent any packets yet but are somehow in this queue
-     break
-     }
-     val now = System.currentTimeMillis()
-     if (now > packet.lastSent + packet.timeout) {
-     val tcpHeader = packet.ipNextHeader as TcpHeader
-     // Double check we haven't already received an ACK for this packet.
-     //
-     // There is a bit of an edge case for SYN packets and FIN packets because the first
-     // data packet keeps the same seq/ack as the ACK for the SYN-ACK. Similarly, the
-     // FIN packet keeps the same seq/ack as the ACK for the final data packet.
-     //
-     if (tcpHeader.sequenceNumber + packet.payload.size.toUInt() <= transmissionControlBlock!!.snd_una &&
-     (tcpState != TcpState.SYN_RECEIVED && tcpHeader.isSyn()) &&
-     (tcpState != TcpState.LAST_ACK && tcpHeader.isFin()) &&
-     (tcpState != TcpState.FIN_WAIT_1 && tcpHeader.isFin()) &&
-     (tcpState != TcpState.CLOSING && tcpHeader.isFin())
-     ) {
-     retransmitQueue.remove(packet)
-     continue
-     }
-     retransmitQueue.remove(packet)
-     retransmits.add(packet)
-     } else {
-     // assume all packets after this timeout later, not sure if true.
-     break
-     }
-     }
-     return retransmits
-     } */
 
     private fun updateRTO() {
         // https://www.rfc-editor.org/rfc/rfc6298.html 5.3:

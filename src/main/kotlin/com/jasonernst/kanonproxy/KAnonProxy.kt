@@ -11,6 +11,7 @@ import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
 import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpState
+import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpHeader
@@ -22,7 +23,9 @@ import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.udp.UdpHeader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
@@ -48,6 +51,13 @@ class KAnonProxy(
     // clients (see the handlePackets function)
     // not private for testing
     val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
+
+    init {
+        CoroutineScope(Dispatchers.IO).launch {
+            Thread.currentThread().name = "KanonProxy TCP Retransmit Thread"
+            tcpRetransmitThread()
+        }
+    }
 
     /**
      * Given the list of packets that have been received, this function will
@@ -239,4 +249,61 @@ class KAnonProxy(
      * This function will block until a packet is available.
      */
     fun takeResponse(): Packet = outgoingQueue.take()
+
+    private suspend fun tcpRetransmitThread() {
+        while (true) {
+            val startTime = System.currentTimeMillis()
+            for (session in sessionTableBySessionKey.values) {
+                if (session is TcpSession) {
+                    processRetransmits(session)
+                    processReverseAcks(session)
+                }
+            }
+
+            val endTime = System.currentTimeMillis()
+            val elapsed = endTime - startTime
+            val idealSleep = (G * 1000).toLong()
+
+            // if it took longer than one clock resolution, just keep processing
+            // otherwise sleep for the difference
+            if (idealSleep - elapsed > 0) {
+                delay(idealSleep - elapsed)
+            } else {
+                logger.warn("Retransmit thread took longer than one clock resolution")
+            }
+        }
+    }
+
+    private suspend fun processRetransmits(session: TcpSession) {
+        session.tcpStateMachine.tcbMutex.withLock {
+            if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+                logger.error("Trying to process retransmit for a CLOSED session")
+                sessionTableBySessionKey.remove(session.getKey())
+                return
+            }
+            val retransmits = session.tcpStateMachine.processTimeouts(session)
+            for (retransmit in retransmits) {
+                logger.debug("Queuing retransmitting packet: $retransmit")
+                outgoingQueue.put(retransmit)
+            }
+        }
+    }
+
+    private suspend fun processReverseAcks(session: TcpSession) {
+        session.tcpStateMachine.tcbMutex.withLock {
+            if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+                logger.error("Trying to process reverse ACKs for a CLOSED session")
+                sessionTableBySessionKey.remove(session.getKey())
+                return
+            }
+            val reverseAcks = session.tcpStateMachine.checkForReverseAcks(session)
+            for (reverseAck in reverseAcks) {
+                logger.warn(
+                    "Waited over 500 ms for reverse traffic, enqueuing ACK " +
+                        "${(reverseAck.nextHeaders as TcpHeader).acknowledgementNumber}",
+                )
+                outgoingQueue.put(reverseAck)
+            }
+        }
+    }
 }
