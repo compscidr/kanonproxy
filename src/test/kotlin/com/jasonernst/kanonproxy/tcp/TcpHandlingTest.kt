@@ -5,10 +5,13 @@ import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.testservers.server.TcpEchoServer
 import io.mockk.mockk
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.Timeout
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
@@ -19,6 +22,7 @@ import java.nio.ByteBuffer
 @Timeout(20)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
 
     companion object {
         val tcpEchoServer = TcpEchoServer()
@@ -36,6 +40,16 @@ class TcpHandlingTest {
         }
     }
 
+    @BeforeEach fun setupEach(testInfo: TestInfo) {
+        logger.debug("Starting test ${testInfo.displayName}")
+        kAnonProxy.start()
+    }
+
+    @AfterEach fun teardownEach(testInfo: TestInfo) {
+        logger.debug("Ending test ${testInfo.displayName}")
+        kAnonProxy.stop()
+    }
+
     @Test
     fun ipv4TcpHandshakeClose() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
@@ -43,7 +57,6 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
         tcpClient.closeClient()
@@ -61,7 +74,6 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
         tcpClient.closeClient(true)
@@ -78,7 +90,6 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
         tcpClient.closeClient()
@@ -96,7 +107,6 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
 
@@ -120,7 +130,6 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient.connect()
 
@@ -135,6 +144,7 @@ class TcpHandlingTest {
 
         val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
         tcpClient2.connect()
+        tcpClient2.closeClient()
     }
 
     // todo: ipv6 tests

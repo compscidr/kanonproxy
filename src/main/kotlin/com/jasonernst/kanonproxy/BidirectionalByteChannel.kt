@@ -1,12 +1,17 @@
 package com.jasonernst.kanonproxy
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.runBlocking
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import kotlin.math.min
 
 class BidirectionalByteChannel : ByteChannel {
-    private val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+    private val buffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
     private var isOpen = true
+
+    private val readyToRead = MutableStateFlow(false)
 
     override fun isOpen(): Boolean = isOpen
 
@@ -15,18 +20,31 @@ class BidirectionalByteChannel : ByteChannel {
     }
 
     override fun write(src: ByteBuffer): Int {
-        val availableBytes = min(readBuffer.remaining(), src.remaining())
-        readBuffer.put(src.array(), src.position(), availableBytes)
+        val availableBytes = min(buffer.remaining(), src.remaining())
+        buffer.put(src.array(), src.position(), availableBytes)
         src.position(src.position() + availableBytes)
+        readyToRead.value = true
         return availableBytes
     }
 
     override fun read(dst: ByteBuffer): Int {
-        val availableBytes = min(readBuffer.remaining(), dst.remaining())
-        readBuffer.flip()
-        dst.put(readBuffer.array(), readBuffer.position(), availableBytes)
-        readBuffer.position(readBuffer.position() + availableBytes)
-        readBuffer.compact()
+        // when this function is called, we expect the buffer is pointing to the end of what was written to it
+        // if its at zero, there is nothing to read
+        if (buffer.position() == 0) {
+            runBlocking {
+                readyToRead.takeWhile { !it }.collect {}
+            }
+        }
+        // flip the buffer to get it from write mode to read mode
+        buffer.flip()
+        val availableBytes = min(buffer.remaining(), dst.remaining())
+        dst.put(buffer.array(), buffer.position(), availableBytes)
+        buffer.position(buffer.position() + availableBytes)
+        if (!buffer.hasRemaining()) {
+            readyToRead.value = false
+        }
+        // compact to get us back into read mode
+        buffer.compact()
         return availableBytes
     }
 }

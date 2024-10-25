@@ -11,6 +11,7 @@ import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
 import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpState
+import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpHeader
@@ -22,7 +23,12 @@ import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.udp.UdpHeader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
@@ -30,6 +36,7 @@ import java.net.Inet6Address
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * @param icmp The ICMP object that will be used to send and receive ICMP packets. Depending on if
@@ -49,6 +56,34 @@ class KAnonProxy(
     // not private for testing
     val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
 
+    private val isRunning = AtomicBoolean(false)
+    private var retransmitJob: Job? = null
+
+    fun start() {
+        if (isRunning.get()) {
+            logger.warn("KAnonProxy is already running")
+            return
+        }
+        isRunning.set(true)
+        retransmitJob =
+            CoroutineScope(Dispatchers.IO).launch {
+                Thread.currentThread().name = "KanonProxy TCP Retransmit Thread"
+                tcpRetransmitThread()
+            }
+        logger.debug("KAnonProxy started")
+    }
+
+    fun stop() {
+        logger.debug("Stopping KAnonProxy")
+        isRunning.set(false)
+        runBlocking {
+            retransmitJob?.cancelAndJoin()
+        }
+        outgoingQueue.clear()
+        sessionTableBySessionKey.clear()
+        logger.debug("KAnonProxy stopped")
+    }
+
     /**
      * Given the list of packets that have been received, this function will
      * determine if an active session is already present for the packet based
@@ -61,6 +96,10 @@ class KAnonProxy(
      *
      */
     fun handlePackets(packets: List<Packet>) {
+        if (!isRunning.get()) {
+            logger.warn("KAnonProxy is not running, ignoring packets")
+            return
+        }
         // TODO: handle case where two+ clients are using the same source, destination IP, port + proto
         //   probably need a UUID, or perhaps the VPN client address if this is used as a VPN server
         //   note: this isn't needed for a TUN/TAP adapter or a packet dumper on Android since there
@@ -238,5 +277,73 @@ class KAnonProxy(
     /**
      * This function will block until a packet is available.
      */
-    fun takeResponse(): Packet = outgoingQueue.take()
+    fun takeResponse(): Packet {
+        if (!isRunning.get()) {
+            logger.warn("KAnonProxy is not running, ignoring packets")
+            return SentinelPacket
+        }
+        return outgoingQueue.take()
+    }
+
+    private suspend fun tcpRetransmitThread() {
+        while (isRunning.get()) {
+            val startTime = System.currentTimeMillis()
+            for (session in sessionTableBySessionKey.values) {
+                if (session is TcpSession) {
+                    processRetransmits(session)
+                    processReverseAcks(session)
+                }
+            }
+
+            val endTime = System.currentTimeMillis()
+            val elapsed = endTime - startTime
+            val idealSleep = (G * 1000).toLong()
+
+            // if it took longer than one clock resolution, just keep processing
+            // otherwise sleep for the difference
+            if (idealSleep - elapsed > 0) {
+                delay(idealSleep - elapsed)
+            } else {
+                logger.warn("Retransmit thread took longer than one clock resolution")
+            }
+        }
+    }
+
+    private suspend fun processRetransmits(session: TcpSession) {
+        session.tcpStateMachine.tcbMutex.withLock {
+            if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+                logger.error("Trying to process retransmit for a CLOSED session")
+                sessionTableBySessionKey.remove(session.getKey())
+                return
+            }
+            val retransmits = session.tcpStateMachine.processTimeouts(session)
+            for (retransmit in retransmits) {
+                logger.debug("Queuing retransmitting packet: $retransmit")
+                outgoingQueue.put(retransmit)
+            }
+        }
+    }
+
+    private suspend fun processReverseAcks(session: TcpSession) {
+        session.tcpStateMachine.tcbMutex.withLock {
+            if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+                logger.error("Trying to process reverse ACKs for a CLOSED session")
+                sessionTableBySessionKey.remove(session.getKey())
+                return
+            }
+            val reverseAcks = session.tcpStateMachine.checkForReverseAcks(session)
+            for (reverseAck in reverseAcks) {
+                logger.warn(
+                    "Waited over 500 ms for reverse traffic, enqueuing ACK " +
+                        "${(reverseAck.nextHeaders as TcpHeader).acknowledgementNumber}",
+                )
+                outgoingQueue.put(reverseAck)
+            }
+        }
+    }
+
+    // todo: when we have per session queues, we will need a parameter like a key
+    fun disconnectSession() {
+        outgoingQueue.put(SentinelPacket)
+    }
 }
