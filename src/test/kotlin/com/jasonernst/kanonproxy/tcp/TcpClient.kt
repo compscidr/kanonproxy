@@ -12,7 +12,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -21,7 +20,7 @@ import org.slf4j.LoggerFactory
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
-import java.util.*
+import java.util.UUID
 import java.util.concurrent.LinkedBlockingDeque
 
 /**
