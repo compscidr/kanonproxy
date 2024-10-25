@@ -74,6 +74,6 @@ object IcmpFactory {
                 (ipHeader.getHeaderLength() + icmpHeader.size().toUShort() + originalRequestBuffer.limit().toUInt()).toInt(),
             )
 
-        return Packet(ipHeader, ICMPNextHeaderWrapper(icmpHeader, protocol.value, "ICMP"), ByteArray(0))
+        return Packet(responseIpHeader, ICMPNextHeaderWrapper(icmpHeader, protocol.value, "ICMP"), ByteArray(0))
     }
 }

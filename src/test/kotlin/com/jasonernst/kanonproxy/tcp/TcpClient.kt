@@ -1,9 +1,12 @@
 package com.jasonernst.kanonproxy.tcp
 
+import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachablePacket
+import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
 import com.jasonernst.kanonproxy.BidirectionalByteChannel
 import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
+import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
@@ -18,6 +21,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.net.InetAddress
+import java.net.SocketException
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.util.UUID
@@ -110,14 +114,23 @@ class TcpClient(
                 ByteBuffer.wrap(packet.toByteArray()),
                 etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
             )
-            val responses =
-                tcpStateMachine.processHeaders(
-                    packet.ipHeader!!,
-                    packet.nextHeaders as TcpHeader,
-                    packet.payload!!,
-                )
-            for (response in responses) {
-                outgoingPackets.add(response)
+
+            if (packet.nextHeaders is TcpHeader) {
+                val responses =
+                    tcpStateMachine.processHeaders(
+                        packet.ipHeader!!,
+                        packet.nextHeaders as TcpHeader,
+                        packet.payload!!,
+                    )
+                for (response in responses) {
+                    outgoingPackets.add(response)
+                }
+            } else if (packet.nextHeaders is ICMPNextHeaderWrapper) {
+                val icmpHeader = (packet.nextHeaders as ICMPNextHeaderWrapper).icmpHeader
+                if (icmpHeader is ICMPv4DestinationUnreachablePacket || icmpHeader is ICMPv6DestinationUnreachablePacket) {
+                    logger.debug("Got ICMP unreachable, closing")
+                    closeClient()
+                }
             }
         }
     }
@@ -125,7 +138,7 @@ class TcpClient(
     /**
      * Blocks until the three-way handshake completes, or fails
      */
-    fun connect() {
+    fun connect(timeOutMs: Long = 1000) {
         if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
             throw RuntimeException("Can't connect, current session isn't closed")
         }
@@ -154,7 +167,7 @@ class TcpClient(
         // this will block until we reach the established state or closed state, or until a timeout occurs
         // if a timeout occurs, an exception will be thrown
         runBlocking {
-            withTimeout(1000) {
+            withTimeout(timeOutMs) {
                 tcpStateMachine.tcpState
                     .takeWhile {
                         it != TcpState.ESTABLISHED && it != TcpState.CLOSED
@@ -164,7 +177,7 @@ class TcpClient(
             }
         }
         if (tcpStateMachine.tcpState.value != TcpState.ESTABLISHED) {
-            throw RuntimeException("$clientId Failed to connect")
+            throw SocketException("$clientId Failed to connect")
         }
     }
 
@@ -220,19 +233,11 @@ class TcpClient(
      * Finishes any outstanding sends / recvs and then closes the connection cleanly with a FIN
      */
     fun closeClient(waitForTimeWait: Boolean = false) {
-        // we probably need to handle some of the other states, see the RFC for when close can be called
-        // for now we'll go with the simple case.
-        if (tcpStateMachine.tcpState.value != TcpState.ESTABLISHED) {
-            throw RuntimeException("Not in established state, can't close")
-        }
-
         // send the FIN
         val finPacket = super.close(false)
         if (finPacket != null) {
             logger.debug("Sending FIN to proxy: ${finPacket.nextHeaders}")
             outgoingPackets.add(finPacket)
-        } else {
-            throw RuntimeException("Failed to close, no FIN packet generated")
         }
 
         // this will block until we reach the established state or closed state, or until a timeout occurs

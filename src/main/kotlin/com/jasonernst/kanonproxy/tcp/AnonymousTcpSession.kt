@@ -46,8 +46,10 @@ class AnonymousTcpSession(
     init {
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
+        // this should throw an exception upon timeout to connect which we should catch in the kanon proxy and
+        // handle by sending an ICMP unreachable packet back.
         logger.debug("TCP connecting to {}:{}", destinationAddress, destinationPort)
-        channel.connect(InetSocketAddress(destinationAddress, destinationPort.toInt()))
+        channel.socket().connect(InetSocketAddress(destinationAddress, destinationPort.toInt()), 1000)
         logger.debug("TCP Connected")
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -63,10 +65,17 @@ class AnonymousTcpSession(
         }
     }
 
-    private fun close(): Packet? {
+    private fun close() {
         if (channel.isOpen) {
-            channel.close()
+            try {
+                channel.close()
+            } catch (e: Exception) {
+                logger.error("Failed to close channel", e)
+            }
         }
-        return super.close(true)
+        val finPacket = super.close(true)
+        if (finPacket != null) {
+            returnQueue.add(finPacket)
+        }
     }
 }

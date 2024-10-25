@@ -2,6 +2,7 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.icmp_linux.ICMPLinux
 import com.jasonernst.kanonproxy.KAnonProxy
+import com.jasonernst.kanonproxy.icmp.IcmpHandlingTest
 import com.jasonernst.testservers.server.TcpEchoServer
 import io.mockk.mockk
 import org.junit.jupiter.api.AfterAll
@@ -13,9 +14,11 @@ import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.Timeout
+import org.junit.jupiter.api.assertThrows
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.SocketException
 import java.nio.ByteBuffer
 
 // this needs to be set to 250 if we want to test the TIME_WAIT state
@@ -179,6 +182,17 @@ class TcpHandlingTest {
         assertArrayEquals(payload, recvBuffer.array())
         assertArrayEquals(payload2, recvBuffer2.array())
         assertArrayEquals(payload + payload2, recvBuffer3.array())
+    }
+
+    @Test
+    fun ipv4TcpUnreachable() {
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName(IcmpHandlingTest.UNREACHABLE_IPV4)
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        assertThrows<SocketException> { tcpClient.connect(2000) }
     }
 
     // todo: ipv6 tests
