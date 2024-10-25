@@ -2769,7 +2769,7 @@ class TcpStateMachine(
         }
 
         if (currentTime > rtoExpiry) {
-            logger.error("RTO EXPIRY!!!!!!!!!")
+            // logger.error("RTO EXPIRY!!!!!!!!!")
             if (session.tcpStateMachine.retransmitQueue.isNotEmpty()) {
                 session.tcpStateMachine.transmissionControlBlock!!.rto *= 2 // exponential backoff, double the RTO
                 session.tcpStateMachine.transmissionControlBlock!!.rto_expiry =
@@ -2821,10 +2821,10 @@ class TcpStateMachine(
 
                 retransmits.add(retransmitPacket)
             } else {
-                logger.debug("RTO expired but no packets to retransmit")
+                // logger.debug("RTO expired but no packets to retransmit")
             }
         } else {
-            logger.debug("RTO not expired yet, currentTime: $currentTime, rtoExpiry: $rtoExpiry")
+            // logger.debug("RTO not expired yet, currentTime: $currentTime, rtoExpiry: $rtoExpiry")
         }
 
         return retransmits
