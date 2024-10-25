@@ -27,7 +27,7 @@ jobs:
       - name: Grant permissions for user space ICMP
         run: sudo sysctl -w net.ipv4.ping_group_range="0   2147483647"
       - name: Build with Gradle
-        run: ./gradlew clean build --no-build-cache
+        run: ./gradlew clean assemble --no-build-cache
       - name: JVM unit Tests with Coverage Report
         run: ./gradlew check
       # tar the reports since its much faster uploading multiple files
