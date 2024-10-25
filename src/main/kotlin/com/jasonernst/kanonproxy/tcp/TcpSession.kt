@@ -59,6 +59,11 @@ abstract class TcpSession(
      */
     fun close(swapSourceAndDestination: Boolean = true): Packet? {
         logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value}")
+        if (tcpStateMachine.transmissionControlBlock == null) {
+            logger.debug("No TCB, returning to CLOSED")
+            tcpStateMachine.tcpState.value = TcpState.CLOSED
+            return null
+        }
         val finPacket =
             TcpHeaderFactory.createFinPacket(
                 sourceAddress,
