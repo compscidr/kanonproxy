@@ -58,7 +58,7 @@ class KAnonProxy(
     val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
 
     private val isRunning = AtomicBoolean(false)
-    private var retransmitJob: Job? = null
+    private var maintenanceJob: Job? = null
 
     companion object {
         const val STALE_SESSION_MS = 5000L
@@ -70,9 +70,9 @@ class KAnonProxy(
             return
         }
         isRunning.set(true)
-        retransmitJob =
+        maintenanceJob =
             CoroutineScope(Dispatchers.IO).launch {
-                Thread.currentThread().name = "KanonProxy TCP Retransmit Thread"
+                Thread.currentThread().name = "KanonProxy Maintenance Thread"
                 sessionMaintenanceThread()
             }
         logger.debug("KAnonProxy started")
@@ -82,7 +82,7 @@ class KAnonProxy(
         logger.debug("Stopping KAnonProxy")
         isRunning.set(false)
         runBlocking {
-            retransmitJob?.cancelAndJoin()
+            maintenanceJob?.join()
         }
         outgoingQueue.clear()
         sessionTableBySessionKey.clear()
@@ -321,6 +321,11 @@ class KAnonProxy(
             for (session in sessionTableBySessionKey.values) {
                 if (session.lastHeard < System.currentTimeMillis() - STALE_SESSION_MS) {
                     logger.warn("Session {} is stale, removing", session)
+                    try {
+                        session.channel.close()
+                    } catch (e: Exception) {
+                        logger.error("Error closing channel: ${e.message}")
+                    }
                     sessionTableBySessionKey.remove(session.getKey())
                     continue
                 }
