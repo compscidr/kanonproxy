@@ -1,5 +1,5 @@
 [versions]
-icmp = "0.0.20"
+icmp = "1.0.0"
 jupiter = "5.11.3"
 kotlin = "2.0.21"
 kotlinter = "4.4.1"
