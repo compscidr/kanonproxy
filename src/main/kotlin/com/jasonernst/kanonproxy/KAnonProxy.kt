@@ -73,7 +73,6 @@ class KAnonProxy(
         }
         isRunning.set(true)
         maintenanceScope.launch {
-            Thread.currentThread().name = "KanonProxy Maintenance Thread"
             sessionMaintenanceThread()
         }
         logger.debug("KAnonProxy started")
@@ -118,19 +117,13 @@ class KAnonProxy(
             }
             when (packet.nextHeaders) {
                 is TransportHeader -> {
-                    CoroutineScope(Dispatchers.IO).launch {
-                        Thread.currentThread().name = "KanonProxy Transport Packet Handler"
-                        handleTransportPacket(packet.ipHeader!!, packet.nextHeaders as TransportHeader, packet.payload!!)
-                    }
+                    handleTransportPacket(packet.ipHeader!!, packet.nextHeaders as TransportHeader, packet.payload!!)
                 }
 
                 is IcmpNextHeaderWrapper -> {
                     val icmpPacket = (packet.nextHeaders as IcmpNextHeaderWrapper).icmpHeader
                     logger.debug("Got Icmp packet {}", icmpPacket)
-                    CoroutineScope(Dispatchers.IO).launch {
-                        Thread.currentThread().name = "KanonProxy Icmp Packet Handler"
-                        handleIcmpPacket(packet.ipHeader!!, icmpPacket)
-                    }
+                    handleIcmpPacket(packet.ipHeader!!, icmpPacket)
                 }
 
                 else -> {
@@ -140,7 +133,7 @@ class KAnonProxy(
         }
     }
 
-    private suspend fun handleTransportPacket(
+    private fun handleTransportPacket(
         ipHeader: IpHeader,
         transportHeader: TransportHeader,
         payload: ByteArray,
@@ -204,12 +197,14 @@ class KAnonProxy(
         }
         when (transportHeader) {
             is UdpHeader -> {
-                withContext(Dispatchers.IO) {
-                    try {
-                        val bytesWrote = session.channel.write(ByteBuffer.wrap(payload))
-                        logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
-                    } catch (e: Exception) {
-                        logger.error("Error writing to UDP channel: $e")
+                runBlocking {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            val bytesWrote = session.channel.write(ByteBuffer.wrap(payload))
+                            logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
+                        } catch (e: Exception) {
+                            logger.error("Error writing to UDP channel: $e")
+                        }
                     }
                 }
             }
@@ -227,7 +222,7 @@ class KAnonProxy(
         }
     }
 
-    private suspend fun handleTcpPacket(
+    private fun handleTcpPacket(
         session: TcpSession,
         ipHeader: IpHeader,
         tcpHeader: TcpHeader,
@@ -251,12 +246,15 @@ class KAnonProxy(
      * When a failure occurs, we need to copy the original IP header + Icmp header into the payload
      * of the Icmp response.
      */
-    private suspend fun handleIcmpPacket(
+    private fun handleIcmpPacket(
         ipHeader: IpHeader,
         icmpPacket: IcmpHeader,
     ) {
         if (icmpPacket is IcmpV4EchoPacket || icmpPacket is IcmpV6EchoPacket) {
-            val result = icmp.ping(ipHeader.destinationAddress)
+            val result =
+                runBlocking {
+                    return@runBlocking icmp.ping(ipHeader.destinationAddress)
+                }
             val icmpResponse =
                 if (result is PingResult.Success) {
                     if (icmpPacket is IcmpV4EchoPacket) {
