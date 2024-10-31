@@ -1,6 +1,6 @@
 package com.jasonernst.kanonproxy.udp
 
-import com.jasonernst.icmp_linux.ICMPLinux
+import com.jasonernst.icmp.linux.IcmpLinux
 import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
@@ -25,7 +25,7 @@ import java.net.InetAddress
 @Timeout(20)
 class UdpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
-    private val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
+    private val kAnonProxy = KAnonProxy(IcmpLinux, mockk(relaxed = true))
 
     companion object {
         val udpEchoServer: UdpEchoServer = UdpEchoServer()

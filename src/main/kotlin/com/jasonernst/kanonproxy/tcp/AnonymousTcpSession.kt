@@ -47,7 +47,7 @@ class AnonymousTcpSession(
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
         // this should throw an exception upon timeout to connect which we should catch in the kanon proxy and
-        // handle by sending an ICMP unreachable packet back.
+        // handle by sending an Icmp unreachable packet back.
         logger.debug("TCP connecting to {}:{}", destinationAddress, destinationPort)
         channel.socket().connect(InetSocketAddress(destinationAddress, destinationPort.toInt()), 1000)
         logger.debug("TCP Connected")

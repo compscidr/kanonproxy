@@ -1,38 +1,39 @@
 package com.jasonernst.kanonproxy.icmp
 
-import com.jasonernst.icmp_common.ICMPType
-import com.jasonernst.icmp_common.PacketHeaderException
-import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachableCodes
-import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachablePacket
-import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
-import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
+import com.jasonernst.icmp.common.IcmpType
+import com.jasonernst.icmp.common.PacketHeaderException
+import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
+import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachablePacket
+import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
+import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
-import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
+import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.nio.ByteBuffer
 
 object IcmpFactory {
     /**
-     * Create an ICMP host unreachable packet to send to the VPN client. The source will be the
+     * Create an Icmp host unreachable packet to send to the VPN client. The source will be the
      * VPN server itself.
      *
      * According to this:
      * https://www.firewall.cx/networking-topics/protocols/icmp-protocol/153-icmp-destination-unreachable.html
      * and wireshark dumps, we must send back the IP header, the transport header, and payload of
-     * the packet which generated the ICMP host unreachable.
+     * the packet which generated the Icmp host unreachable.
      *
-     * @param sourceAddress source address for the ICMP header
+     * @param sourceAddress source address for the Icmp header
      * @param ipHeader the IP header of the packet which caused the host unreachable
      * @param transportHeader the transport header of the packet which caused the host unreachable
      * @param payload the payload of the packet which caused the host unreachable
      */
     fun createDestinationUnreachable(
-        code: ICMPType,
+        code: IcmpType,
         sourceAddress: InetAddress,
         ipHeader: IpHeader,
         transportHeader: TransportHeader,
@@ -56,10 +57,16 @@ object IcmpFactory {
         val icmpHeader =
             when (ipHeader) {
                 is Ipv4Header -> {
-                    ICMPv4DestinationUnreachablePacket(code as ICMPv4DestinationUnreachableCodes, 0u, originalRequestBuffer.array())
+                    IcmpV4DestinationUnreachablePacket(code as IcmpV4DestinationUnreachableCodes, 0u, originalRequestBuffer.array())
                 }
                 is Ipv6Header -> {
-                    ICMPv6DestinationUnreachablePacket(code as ICMPv6DestinationUnreachableCodes, 0u, originalRequestBuffer.array())
+                    IcmpV6DestinationUnreachablePacket(
+                        sourceAddress as Inet6Address,
+                        ipHeader.sourceAddress,
+                        code as IcmpV6DestinationUnreachableCodes,
+                        0u,
+                        originalRequestBuffer.array(),
+                    )
                 }
                 else -> {
                     throw PacketHeaderException("Unknown IP header type: ${ipHeader::class}")
@@ -74,6 +81,6 @@ object IcmpFactory {
                 (ipHeader.getHeaderLength() + icmpHeader.size().toUShort() + originalRequestBuffer.limit().toUInt()).toInt(),
             )
 
-        return Packet(responseIpHeader, ICMPNextHeaderWrapper(icmpHeader, protocol.value, "ICMP"), ByteArray(0))
+        return Packet(responseIpHeader, IcmpNextHeaderWrapper(icmpHeader, protocol.value, "Icmp"), ByteArray(0))
     }
 }

@@ -24,7 +24,7 @@ jobs:
         with:
           java-version: 17
           distribution: temurin
-      - name: Grant permissions for user space ICMP
+      - name: Grant permissions for user space Icmp
         run: sudo sysctl -w net.ipv4.ping_group_range="0   2147483647"
       - name: Build with Gradle
         run: ./gradlew clean assemble --no-build-cache

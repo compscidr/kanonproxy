@@ -1,23 +1,20 @@
 [versions]
-icmp = "0.0.20"
+icmp = "1.0.0"
 jupiter = "5.11.3"
 kotlin = "2.0.21"
 kotlinter = "4.4.1"
-knet = "0.0.14"
+knet = "0.1.1"
 logback-classic = "1.5.12"
 mockk = "1.13.13"
-packetdumper = "0.0.10"
 slf4j = "2.0.16"
 testservers = "0.0.1"
 
 [libraries]
-icmp_common = { module = "com.jasonernst.icmp:icmp_common", version.ref = "icmp" }
 icmp_linux = { module = "com.jasonernst.icmp:icmp_linux", version.ref = "icmp" }
 junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "jupiter" }
 junit-jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "jupiter" }
 knet = { group = "com.jasonernst.knet", name = "knet", version.ref = "knet" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback-classic" }
-packetdumper = { module = "com.jasonernst.packetdumper:packetdumper", version.ref = "packetdumper" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 testservers = { group = "com.jasonernst.test-servers", name = "test-servers", version.ref = "testservers" }

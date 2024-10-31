@@ -1,6 +1,6 @@
 package com.jasonernst.kanonproxy.tcp
 
-import com.jasonernst.icmp_linux.ICMPLinux
+import com.jasonernst.icmp.linux.IcmpLinux
 import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.kanonproxy.icmp.IcmpHandlingTest
 import com.jasonernst.testservers.server.TcpEchoServer
@@ -25,7 +25,7 @@ import java.nio.ByteBuffer
 @Timeout(20)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
-    private val kAnonProxy = KAnonProxy(ICMPLinux, mockk(relaxed = true))
+    private val kAnonProxy = KAnonProxy(IcmpLinux, mockk(relaxed = true))
 
     companion object {
         val tcpEchoServer = TcpEchoServer()

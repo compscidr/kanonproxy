@@ -1,12 +1,12 @@
 package com.jasonernst.kanonproxy.tcp
 
-import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachablePacket
-import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
+import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachablePacket
+import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.kanonproxy.BidirectionalByteChannel
 import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
-import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
+import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
@@ -125,10 +125,10 @@ class TcpClient(
                 for (response in responses) {
                     outgoingPackets.add(response)
                 }
-            } else if (packet.nextHeaders is ICMPNextHeaderWrapper) {
-                val icmpHeader = (packet.nextHeaders as ICMPNextHeaderWrapper).icmpHeader
-                if (icmpHeader is ICMPv4DestinationUnreachablePacket || icmpHeader is ICMPv6DestinationUnreachablePacket) {
-                    logger.debug("Got ICMP unreachable, closing")
+            } else if (packet.nextHeaders is IcmpNextHeaderWrapper) {
+                val icmpHeader = (packet.nextHeaders as IcmpNextHeaderWrapper).icmpHeader
+                if (icmpHeader is IcmpV4DestinationUnreachablePacket || icmpHeader is IcmpV6DestinationUnreachablePacket) {
+                    logger.debug("Got Icmp unreachable, closing")
                     closeClient()
                 }
             }

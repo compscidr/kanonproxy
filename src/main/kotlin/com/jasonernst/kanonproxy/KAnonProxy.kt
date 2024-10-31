@@ -1,14 +1,14 @@
 package com.jasonernst.kanonproxy
 
-import com.jasonernst.icmp_common.ICMP
-import com.jasonernst.icmp_common.ICMPHeader
-import com.jasonernst.icmp_common.PingResult
-import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachableCodes
-import com.jasonernst.icmp_common.v4.ICMPv4DestinationUnreachablePacket
-import com.jasonernst.icmp_common.v4.ICMPv4EchoPacket
-import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachableCodes
-import com.jasonernst.icmp_common.v6.ICMPv6DestinationUnreachablePacket
-import com.jasonernst.icmp_common.v6.ICMPv6EchoPacket
+import com.jasonernst.icmp.common.Icmp
+import com.jasonernst.icmp.common.IcmpHeader
+import com.jasonernst.icmp.common.PingResult
+import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
+import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachablePacket
+import com.jasonernst.icmp.common.v4.IcmpV4EchoPacket
+import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
+import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
+import com.jasonernst.icmp.common.v6.IcmpV6EchoPacket
 import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpState
@@ -18,7 +18,7 @@ import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
-import com.jasonernst.knet.network.nextheader.ICMPNextHeaderWrapper
+import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.udp.UdpHeader
@@ -39,11 +39,11 @@ import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * @param icmp The ICMP object that will be used to send and receive ICMP packets. Depending on if
- *   this is run on Android or Linux, we should use ICMPLinux or ICMPAndroid.
+ * @param icmp The Icmp object that will be used to send and receive Icmp packets. Depending on if
+ *   this is run on Android or Linux, we should use IcmpLinux or IcmpAndroid.
  */
 class KAnonProxy(
-    val icmp: ICMP,
+    val icmp: Icmp,
     val protector: VpnProtector = DummyProtector,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -122,12 +122,12 @@ class KAnonProxy(
                     }
                 }
 
-                is ICMPNextHeaderWrapper -> {
-                    val icmpPacket = (packet.nextHeaders as ICMPNextHeaderWrapper).icmpHeader
-                    logger.debug("Got ICMP packet {}", icmpPacket)
+                is IcmpNextHeaderWrapper -> {
+                    val icmpPacket = (packet.nextHeaders as IcmpNextHeaderWrapper).icmpHeader
+                    logger.debug("Got Icmp packet {}", icmpPacket)
                     CoroutineScope(Dispatchers.IO).launch {
-                        Thread.currentThread().name = "KanonProxy ICMP Packet Handler"
-                        handleICMPPacket(packet.ipHeader!!, icmpPacket)
+                        Thread.currentThread().name = "KanonProxy Icmp Packet Handler"
+                        handleIcmpPacket(packet.ipHeader!!, icmpPacket)
                     }
                 }
 
@@ -171,14 +171,14 @@ class KAnonProxy(
                 logger.error("Error creating session: ${e.message}")
                 val code =
                     when (ipHeader) {
-                        is Ipv4Header -> ICMPv4DestinationUnreachableCodes.HOST_UNREACHABLE
-                        is Ipv6Header -> ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
+                        is Ipv4Header -> IcmpV4DestinationUnreachableCodes.HOST_UNREACHABLE
+                        is Ipv6Header -> IcmpV6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
                         else -> throw IllegalArgumentException("Unknown IP protocol: " + ipHeader::class.java.simpleName)
                     }
                 val response =
                     IcmpFactory.createDestinationUnreachable(
                         code,
-                        // source address for the ICMP header, send it back to the client as if its the clients own OS
+                        // source address for the Icmp header, send it back to the client as if its the clients own OS
                         // telling it that its unreachable
                         ipHeader.sourceAddress,
                         ipHeader,
@@ -231,50 +231,60 @@ class KAnonProxy(
     }
 
     /**
-     * Handles ICMP packets. For now, this is only ICMP echo requests. All others are ignored.
+     * Handles Icmp packets. For now, this is only Icmp echo requests. All others are ignored.
      *
      * https://datatracker.ietf.org/doc/html/rfc792
      * https://datatracker.ietf.org/doc/html/rfc4443
      *
-     * According to the spec, if the ping fails, we should send an ICMP NETWORK_UNREACHABLE for
+     * According to the spec, if the ping fails, we should send an Icmp NETWORK_UNREACHABLE for
      * IPv4 or a NO_ROUTE_TO_DESTINATION for IPv6.
      *
-     * When a failure occurs, we need to copy the original IP header + ICMP header into the payload
-     * of the ICMP response.
+     * When a failure occurs, we need to copy the original IP header + Icmp header into the payload
+     * of the Icmp response.
      */
-    private suspend fun handleICMPPacket(
+    private suspend fun handleIcmpPacket(
         ipHeader: IpHeader,
-        icmpPacket: ICMPHeader,
+        icmpPacket: IcmpHeader,
     ) {
-        if (icmpPacket is ICMPv4EchoPacket || icmpPacket is ICMPv6EchoPacket) {
+        if (icmpPacket is IcmpV4EchoPacket || icmpPacket is IcmpV6EchoPacket) {
             val result = icmp.ping(ipHeader.destinationAddress)
             val icmpResponse =
                 if (result is PingResult.Success) {
-                    if (icmpPacket is ICMPv4EchoPacket) {
-                        ICMPv4EchoPacket(0u, icmpPacket.id, icmpPacket.sequence, true, icmpPacket.data)
+                    if (icmpPacket is IcmpV4EchoPacket) {
+                        IcmpV4EchoPacket(0u, icmpPacket.id, icmpPacket.sequence, true, icmpPacket.data)
                     } else {
-                        icmpPacket as ICMPv6EchoPacket
-                        ICMPv6EchoPacket(0u, icmpPacket.id, icmpPacket.sequence, true, icmpPacket.data)
+                        icmpPacket as IcmpV6EchoPacket
+                        IcmpV6EchoPacket(
+                            ipHeader.destinationAddress as Inet6Address,
+                            ipHeader.sourceAddress as Inet6Address,
+                            0u,
+                            icmpPacket.id,
+                            icmpPacket.sequence,
+                            true,
+                            icmpPacket.data,
+                        )
                     }
                 } else {
-                    if (icmpPacket is ICMPv4EchoPacket) {
+                    if (icmpPacket is IcmpV4EchoPacket) {
                         val payload = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
                         payload.put(ipHeader.toByteArray())
                         payload.put(icmpPacket.toByteArray())
-                        ICMPv4DestinationUnreachablePacket(ICMPv4DestinationUnreachableCodes.NETWORK_UNREACHABLE, data = payload.array())
+                        IcmpV4DestinationUnreachablePacket(IcmpV4DestinationUnreachableCodes.NETWORK_UNREACHABLE, data = payload.array())
                     } else {
                         val payload = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
                         payload.put(ipHeader.toByteArray())
                         payload.put(icmpPacket.toByteArray())
-                        ICMPv6DestinationUnreachablePacket(
-                            ICMPv6DestinationUnreachableCodes.NO_ROUTE_TO_DESTINATION,
+                        IcmpV6DestinationUnreachablePacket(
+                            ipHeader.destinationAddress as Inet6Address,
+                            ipHeader.sourceAddress as Inet6Address,
+                            IcmpV6DestinationUnreachableCodes.NO_ROUTE_TO_DESTINATION,
                             data = payload.array(),
                         )
                     }
                 }
 
             val ipResponse =
-                if (icmpPacket is ICMPv4EchoPacket) {
+                if (icmpPacket is IcmpV4EchoPacket) {
                     Ipv4Header(
                         sourceAddress = ipHeader.destinationAddress as Inet4Address,
                         destinationAddress = ipHeader.sourceAddress as Inet4Address,
@@ -297,9 +307,9 @@ class KAnonProxy(
                             ).toUShort(),
                     )
                 }
-            outgoingQueue.put(Packet(ipResponse, ICMPNextHeaderWrapper(icmpResponse, ipHeader.protocol, "ICMP"), ByteArray(0)))
+            outgoingQueue.put(Packet(ipResponse, IcmpNextHeaderWrapper(icmpResponse, ipHeader.protocol, "Icmp"), ByteArray(0)))
         } else {
-            logger.error("Ignoring Unsupported ICMP packet type: {}", icmpPacket.javaClass)
+            logger.error("Ignoring Unsupported Icmp packet type: {}", icmpPacket.javaClass)
         }
     }
 
