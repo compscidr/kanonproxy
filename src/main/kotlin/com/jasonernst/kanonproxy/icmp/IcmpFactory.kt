@@ -16,12 +16,16 @@ import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header.Companion.IP6_HEADER_SIZE
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
+import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
+import org.slf4j.LoggerFactory
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import kotlin.math.min
 
 object IcmpFactory {
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     /**
      * Create an Icmp host unreachable packet to send to the VPN client. The source will be the
      * VPN server itself.
@@ -54,9 +58,6 @@ object IcmpFactory {
                 }
             }
 
-        val originalRequestBuffer = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
-        originalRequestBuffer.put(ipHeader.toByteArray())
-
         val originalTransportBufferAndPayloadBuffer = ByteBuffer.allocate(ipHeader.getPayloadLength().toInt())
         originalTransportBufferAndPayloadBuffer.put(transportHeader.toByteArray())
         originalTransportBufferAndPayloadBuffer.put(payload)
@@ -75,13 +76,19 @@ object IcmpFactory {
         val actualLimit = min(limit, originalTransportBufferAndPayloadBuffer.limit())
         val reducedTransportBuffer = ByteArray(actualLimit)
         System.arraycopy(originalTransportBufferAndPayloadBuffer.array(), 0, reducedTransportBuffer, 0, actualLimit)
-        originalRequestBuffer.put(reducedTransportBuffer)
-        originalRequestBuffer.rewind()
+
+        val modifiedOriginalRequestBuffer = ByteBuffer.allocate(ipHeader.getHeaderLength().toInt() + actualLimit)
+        modifiedOriginalRequestBuffer.put(ipHeader.toByteArray())
+        modifiedOriginalRequestBuffer.put(reducedTransportBuffer)
+        modifiedOriginalRequestBuffer.rewind()
+
+        val stringPacketDumper = StringPacketDumper(logger)
+        stringPacketDumper.dumpBuffer(modifiedOriginalRequestBuffer)
 
         val icmpHeader =
             when (ipHeader) {
                 is Ipv4Header -> {
-                    IcmpV4DestinationUnreachablePacket(code as IcmpV4DestinationUnreachableCodes, 0u, originalRequestBuffer.array())
+                    IcmpV4DestinationUnreachablePacket(code as IcmpV4DestinationUnreachableCodes, 0u, modifiedOriginalRequestBuffer.array())
                 }
                 is Ipv6Header -> {
                     IcmpV6DestinationUnreachablePacket(
@@ -89,20 +96,19 @@ object IcmpFactory {
                         ipHeader.sourceAddress,
                         code as IcmpV6DestinationUnreachableCodes,
                         0u,
-                        originalRequestBuffer.array(),
+                        modifiedOriginalRequestBuffer.array(),
                     )
                 }
                 else -> {
                     throw PacketHeaderException("Unknown IP header type: ${ipHeader::class}")
                 }
             }
-
         val responseIpHeader =
             IpHeader.createIPHeader(
                 sourceAddress,
                 ipHeader.sourceAddress,
                 protocol,
-                (ipHeader.getHeaderLength() + icmpHeader.size().toUShort() + originalRequestBuffer.limit().toUInt()).toInt(),
+                icmpHeader.size(),
             )
 
         return Packet(responseIpHeader, IcmpNextHeaderWrapper(icmpHeader, protocol.value, "Icmp"), ByteArray(0))
