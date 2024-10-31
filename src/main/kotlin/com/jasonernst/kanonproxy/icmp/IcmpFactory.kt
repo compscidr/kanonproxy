@@ -19,6 +19,7 @@ import com.jasonernst.knet.transport.TransportHeader
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.nio.ByteBuffer
+import kotlin.math.min
 
 object IcmpFactory {
     /**
@@ -71,8 +72,9 @@ object IcmpFactory {
                 // IPv6 header length, ICMPv6 destination unreachable min header length, IPv6 header length (the one that generated this to happen)
                 (mtu.toUInt() - IP6_HEADER_SIZE - DESTINATION_UNREACHABLE_HEADER_MIN_LENGTH - IP6_HEADER_SIZE).toInt()
             }
-        val reducedTransportBuffer = ByteArray(limit)
-        System.arraycopy(originalTransportBufferAndPayloadBuffer.array(), 0, reducedTransportBuffer, 0, limit)
+        val actualLimit = min(limit, originalTransportBufferAndPayloadBuffer.limit())
+        val reducedTransportBuffer = ByteArray(actualLimit)
+        System.arraycopy(originalTransportBufferAndPayloadBuffer.array(), 0, reducedTransportBuffer, 0, actualLimit)
         originalRequestBuffer.put(reducedTransportBuffer)
         originalRequestBuffer.rewind()
 
