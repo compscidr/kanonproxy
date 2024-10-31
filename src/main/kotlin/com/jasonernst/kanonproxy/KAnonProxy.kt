@@ -21,6 +21,7 @@ import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
+import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import com.jasonernst.knet.transport.udp.UdpHeader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -175,6 +176,12 @@ class KAnonProxy(
                         is Ipv6Header -> IcmpV6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
                         else -> throw IllegalArgumentException("Unknown IP protocol: " + ipHeader::class.java.simpleName)
                     }
+                val mtu =
+                    if (ipHeader is Ipv4Header) {
+                        TcpOptionMaximumSegmentSize.defaultIpv4MSS
+                    } else {
+                        TcpOptionMaximumSegmentSize.defaultIpv6MSS
+                    }
                 val response =
                     IcmpFactory.createDestinationUnreachable(
                         code,
@@ -184,6 +191,7 @@ class KAnonProxy(
                         ipHeader,
                         transportHeader,
                         payload,
+                        mtu.toInt(),
                     )
                 outgoingQueue.add(response)
                 return
