@@ -11,6 +11,7 @@ import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
+import com.jasonernst.knet.network.ip.v4.Ipv4Header.Companion.IP4_MIN_HEADER_LENGTH
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header.Companion.IP6_HEADER_SIZE
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
@@ -61,10 +62,13 @@ object IcmpFactory {
 
         val limit =
             if (ipHeader is Ipv4Header) {
-                8 // rfc792 says to include the first 64-bits of the transport header
+                // rfc792 says to include the first 64-bits of the transport header, however, in practice, it seems
+                // to follow similar rules to IPv6, so we'll include as much as possible without going over the min MTU
+                // (verified with wireshark pcap dumps from my system)
+                (mtu.toUInt() - IP4_MIN_HEADER_LENGTH - DESTINATION_UNREACHABLE_HEADER_MIN_LENGTH - ipHeader.getHeaderLength()).toInt()
             } else {
                 // rfc4443 says to include as much as possible without going over the min MTU
-                // IPv6 header length, ICMPv6 destination unreachble min header length, IPv6 header length (the one that generated this to happen)
+                // IPv6 header length, ICMPv6 destination unreachable min header length, IPv6 header length (the one that generated this to happen)
                 (mtu.toUInt() - IP6_HEADER_SIZE - DESTINATION_UNREACHABLE_HEADER_MIN_LENGTH - IP6_HEADER_SIZE).toInt()
             }
         val reducedTransportBuffer = ByteArray(limit)
