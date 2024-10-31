@@ -38,6 +38,8 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 
 /**
  * @param icmp The Icmp object that will be used to send and receive Icmp packets. Depending on if
@@ -58,7 +60,8 @@ class KAnonProxy(
     val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
 
     private val isRunning = AtomicBoolean(false)
-    private var maintenanceJob: Job? = null
+    private var maintenanceJob = SupervisorJob() // https://stackoverflow.com/a/63407811
+    private val maintenanceScope = CoroutineScope(Dispatchers.IO + maintenanceJob)
 
     companion object {
         const val STALE_SESSION_MS = 5000L
@@ -70,11 +73,10 @@ class KAnonProxy(
             return
         }
         isRunning.set(true)
-        maintenanceJob =
-            CoroutineScope(Dispatchers.IO).launch {
-                Thread.currentThread().name = "KanonProxy Maintenance Thread"
-                sessionMaintenanceThread()
-            }
+        maintenanceScope.launch {
+            Thread.currentThread().name = "KanonProxy Maintenance Thread"
+            sessionMaintenanceThread()
+        }
         logger.debug("KAnonProxy started")
     }
 
@@ -82,7 +84,7 @@ class KAnonProxy(
         logger.debug("Stopping KAnonProxy")
         isRunning.set(false)
         runBlocking {
-            maintenanceJob?.join()
+            maintenanceJob.cancelAndJoin()
         }
         outgoingQueue.clear()
         sessionTableBySessionKey.clear()
