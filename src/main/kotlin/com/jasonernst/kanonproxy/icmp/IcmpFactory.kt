@@ -30,14 +30,14 @@ object IcmpFactory {
      * @param sourceAddress source address for the Icmp header
      * @param ipHeader the IP header of the packet which caused the host unreachable
      * @param transportHeader the transport header of the packet which caused the host unreachable
-     * @param payload the payload of the packet which caused the host unreachable
+     *  (only the first 64-bits of it are used)
+     *
      */
     fun createDestinationUnreachable(
         code: IcmpType,
         sourceAddress: InetAddress,
         ipHeader: IpHeader,
         transportHeader: TransportHeader,
-        payload: ByteArray,
     ): Packet {
         val protocol =
             when (ipHeader) {
@@ -50,8 +50,11 @@ object IcmpFactory {
 
         val originalRequestBuffer = ByteBuffer.allocate(ipHeader.getTotalLength().toInt())
         originalRequestBuffer.put(ipHeader.toByteArray())
-        originalRequestBuffer.put(transportHeader.toByteArray())
-        originalRequestBuffer.put(payload)
+
+        val originalTransportBuffer = transportHeader.toByteArray()
+        val reducedTransportBuffer = ByteArray(8) // RFC792 and RFC4443 say to include the first 64-bits of anything after the IP header
+        System.arraycopy(originalTransportBuffer, 0, reducedTransportBuffer, 0, 8)
+        originalRequestBuffer.put(reducedTransportBuffer)
         originalRequestBuffer.rewind()
 
         val icmpHeader =
