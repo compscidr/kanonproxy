@@ -6,6 +6,7 @@ import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.knet.Packet
+import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
@@ -52,12 +53,15 @@ class AnonymousTcpSession(
     override fun handlePacketFromClient(packet: Packet) {
         val responsePackets = tcpStateMachine.processHeaders(packet.ipHeader!!, packet.nextHeaders!! as TcpHeader, packet.payload!!)
         for (response in responsePackets) {
-            returnQueue.put(packet)
+            logger.debug("RETURN PACKET: {}", response.nextHeaders)
+            returnQueue.put(response)
         }
+
         if (tcpStateMachine.tcpState.value == TcpState.CLOSED) {
             logger.debug("Tcp session is closed, removing from session table, {}", this)
             // todo: we need this to be per-session at some point
-            // outgoingQueue.put(SentinelPacket)
+            returnQueue.put(SentinelPacket)
+            sessionManager.removeSession(this)
         }
     }
 
@@ -65,13 +69,14 @@ class AnonymousTcpSession(
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
         outgoingScope.launch {
+            Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             try {
                 logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 channel.socket().connect(
                     InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
                     1000,
                 )
-                logger.debug("TCP Connected")
+                logger.debug("TCP connected")
                 startIncomingHandling()
             } catch (e: Exception) {
                 // this should catch any exceptions trying to make the TCP connection (timeout, not reachable etc.)

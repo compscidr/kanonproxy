@@ -103,6 +103,7 @@ abstract class Session(
         }
         isRunning.set(true)
         incomingScope.launch {
+            Thread.currentThread().name = "Incoming handler: ${getKey()}"
             while (isRunning.get()) {
                 val packet = incomingQueue.take()
                 if (packet is SentinelPacket) {

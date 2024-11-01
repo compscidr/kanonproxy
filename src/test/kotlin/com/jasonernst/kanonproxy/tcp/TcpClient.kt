@@ -97,7 +97,7 @@ class TcpClient(
         while (isRunning) {
             val packet = outgoingPackets.take()
             if (packet == SentinelPacket) {
-                logger.debug("Got sentinel packet, stopping")
+                logger.warn("Got sentinel packet, stopping writer")
                 break
             }
             logger.debug("Sending to proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet)
@@ -113,14 +113,14 @@ class TcpClient(
         while (isRunning) {
             val packet = kAnonProxy.takeResponse()
             if (packet == SentinelPacket) {
-                logger.debug("Got sentinel packet, stopping")
+                logger.warn("Got sentinel packet, stopping reader")
                 break
             }
             if (packet.ipHeader == null || packet.nextHeaders == null || packet.payload == null) {
                 logger.debug("missing header(s) or payload, skipping packet")
                 continue
             }
-            logger.debug("Received from proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet)
+            logger.debug("Received from proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet.nextHeaders)
             packetDumper.dumpBuffer(
                 ByteBuffer.wrap(packet.toByteArray()),
                 etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
@@ -308,6 +308,7 @@ class TcpClient(
      * In the Tcp Client, this is actually handling packets it got from the proxy
      */
     override fun handlePacketFromClient(packet: Packet) {
+        logger.error("GOT HERE")
     }
 
     override fun getSourcePort(): UShort = sourcePort

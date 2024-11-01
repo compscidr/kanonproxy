@@ -362,6 +362,7 @@ class KAnonProxy(
     }
 
     override fun removeSession(session: Session) {
+        logger.debug("Removing session: {}", session)
         sessionTableBySessionKey.remove(session.getKey())
     }
 }
