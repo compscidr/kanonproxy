@@ -740,7 +740,7 @@ class TcpStateMachine(
                                         session.channel.write(buffer)
                                     }
                                 } catch (e: Exception) {
-                                    val packet = session.close()
+                                    val packet = session.teardown()
                                     if (packet != null) {
                                         return@runBlocking listOf(packet)
                                     } else {
@@ -780,7 +780,7 @@ class TcpStateMachine(
                                         ackNumber = transmissionControlBlock!!.rcv_nxt,
                                         transmissionControlBlock = transmissionControlBlock,
                                     )
-                                val finPacket = session.close()
+                                val finPacket = session.teardown()
                                 if (finPacket != null) {
                                     return@runBlocking listOf(ackPacket, finPacket)
                                 } else {
@@ -990,7 +990,7 @@ class TcpStateMachine(
                                 session.channel.write(buffer)
                             }
                         } catch (e: Exception) {
-                            val packet = session.close()
+                            val packet = session.teardown()
                             if (packet != null) {
                                 return@runBlocking listOf(packet)
                             } else {
@@ -1034,7 +1034,7 @@ class TcpStateMachine(
                                 ackNumber = transmissionControlBlock!!.rcv_nxt,
                                 transmissionControlBlock = transmissionControlBlock,
                             )
-                        val finPacket = session.close()
+                        val finPacket = session.teardown()
                         if (finPacket != null) {
                             return@runBlocking listOf(ackPacket, finPacket)
                         } else {
@@ -1237,7 +1237,7 @@ class TcpStateMachine(
                                 session.channel.write(buffer)
                             }
                         } catch (e: Exception) {
-                            val packet = session.close()
+                            val packet = session.teardown()
                             if (packet != null) {
                                 return@runBlocking listOf(packet)
                             } else {
@@ -1478,7 +1478,7 @@ class TcpStateMachine(
                             session.channel.write(buffer)
                         }
                     } catch (e: Exception) {
-                        val packet = session.close()
+                        val packet = session.teardown()
                         if (packet != null) {
                             return@runBlocking listOf(packet)
                         } else {
@@ -2612,10 +2612,10 @@ class TcpStateMachine(
     fun encapsulateOutgoingData(swapSourceDestination: Boolean = false): List<Packet> {
         return runBlocking {
             val packets = ArrayList<Packet>()
-            val sourceAddress = if (swapSourceDestination) session.destinationAddress else session.sourceAddress
-            val destinationAddress = if (swapSourceDestination) session.sourceAddress else session.destinationAddress
-            val sourcePort = if (swapSourceDestination) session.destinationPort else session.sourcePort
-            val destinationPort = if (swapSourceDestination) session.sourcePort else session.destinationPort
+            val sourceAddress = if (swapSourceDestination) session.getDestinationAddress() else session.getSourceAddress()
+            val destinationAddress = if (swapSourceDestination) session.getSourceAddress() else session.getDestinationAddress()
+            val sourcePort = if (swapSourceDestination) session.getDestinationPort() else session.getSourcePort()
+            val destinationPort = if (swapSourceDestination) session.getSourcePort() else session.getDestinationPort()
 
             val tcpHeader = TcpHeader(sourcePort = sourcePort, destinationPort = destinationPort)
             val ipHeader =
