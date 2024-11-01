@@ -7,7 +7,7 @@ knet = "0.1.1"
 logback-classic = "1.5.12"
 mockk = "1.13.13"
 slf4j = "2.0.16"
-testservers = "0.0.1"
+testservers = "0.0.2"
 
 [libraries]
 icmp_linux = { module = "com.jasonernst.icmp:icmp_linux", version.ref = "icmp" }
