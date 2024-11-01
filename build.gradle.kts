@@ -43,7 +43,7 @@ jacoco {
 
 dependencies {
     api(libs.slf4j.api)
-    implementation(libs.knet)
+    api(libs.knet)
     testImplementation(libs.icmp.linux)
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.jupiter.engine)
