@@ -1,37 +1,41 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.Session
+import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
-import com.jasonernst.knet.network.ip.IpType
+import com.jasonernst.knet.network.ip.IpHeader
+import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
-import java.net.InetAddress
+import java.net.Inet6Address
 import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingDeque
 
 abstract class TcpSession(
-    sourceAddress: InetAddress,
-    sourcePort: UShort,
-    destinationAddress: InetAddress,
-    destinationPort: UShort,
+    initialIpHeader: IpHeader?,
+    initialTransportHeader: TransportHeader?,
+    initialPayload: ByteArray?,
     returnQueue: LinkedBlockingDeque<Packet>,
     protector: VpnProtector,
+    sessionManager: SessionManager,
 ) : Session(
-        sourceAddress = sourceAddress,
-        sourcePort = sourcePort,
-        destinationAddress = destinationAddress,
-        destinationPort = destinationPort,
-        protocol = IpType.TCP.value,
+        initialIpHeader = initialIpHeader,
+        initialTransportHeader = initialTransportHeader,
+        initialPayload = initialPayload,
         returnQueue = returnQueue,
         protector = protector,
+        sessionManager = sessionManager,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    protected val mtu =
-        if (destinationAddress is Inet4Address) {
+    protected open val mtu =
+        if (initialIpHeader == null) {
+            logger.warn("Initial IP header is null, can't determine MTU")
+            0u
+        } else if (initialIpHeader.destinationAddress is Inet4Address) {
             TcpOptionMaximumSegmentSize.defaultIpv4MSS
         } else {
             TcpOptionMaximumSegmentSize.defaultIpv6MSS
@@ -50,26 +54,31 @@ abstract class TcpSession(
     }
 
     /**
-     * Should be called to cleanly shut down the session. If in state LISTEN, or SYN_SENT, delete the TCB and return
+     * Should be called to cleanly tear down the session. If in state LISTEN, or SYN_SENT, delete the TCB and return
      * to closed state.
      *
      * If in state SYN_RECV, ESTAB, CLOSE_WAIT, send FIN.
      *
      * else do nothing.
      */
-    fun close(swapSourceAndDestination: Boolean = true): Packet? {
+    fun teardown(swapSourceAndDestination: Boolean = true): Packet? {
         logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value}")
         if (tcpStateMachine.transmissionControlBlock == null) {
             logger.debug("No TCB, returning to CLOSED")
             tcpStateMachine.tcpState.value = TcpState.CLOSED
             return null
         }
+        if (initialIpHeader == null || initialTransportHeader == null) {
+            logger.error("Initial headers are null, can't send FIN")
+            tcpStateMachine.tcpState.value = TcpState.CLOSED
+            return null
+        }
         val finPacket =
             TcpHeaderFactory.createFinPacket(
-                sourceAddress,
-                destinationAddress,
-                sourcePort,
-                destinationPort,
+                initialIpHeader!!.sourceAddress,
+                initialIpHeader!!.destinationAddress,
+                initialTransportHeader!!.sourcePort,
+                initialTransportHeader!!.destinationPort,
                 tcpStateMachine.transmissionControlBlock!!.snd_nxt,
                 tcpStateMachine.transmissionControlBlock!!.rcv_nxt,
                 swapSourceAndDestination,
@@ -103,4 +112,19 @@ abstract class TcpSession(
     fun reestablishConnection() {
         TODO()
     }
+
+    open fun mtu(): UShort =
+        when (initialIpHeader?.destinationAddress) {
+            is Inet4Address -> {
+                TcpOptionMaximumSegmentSize.defaultIpv4MSS
+            }
+
+            is Inet6Address -> {
+                TcpOptionMaximumSegmentSize.defaultIpv6MSS
+            }
+
+            else -> {
+                0u
+            }
+        }
 }

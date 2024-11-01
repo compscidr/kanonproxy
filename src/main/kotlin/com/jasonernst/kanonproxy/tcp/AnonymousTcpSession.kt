@@ -1,34 +1,40 @@
 package com.jasonernst.kanonproxy.tcp
 
+import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
+import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
+import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
+import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.knet.Packet
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import com.jasonernst.knet.network.ip.IpHeader
+import com.jasonernst.knet.transport.TransportHeader
+import com.jasonernst.knet.transport.tcp.TcpHeader
+import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
-import java.net.InetAddress
+import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.nio.channels.SocketChannel
 import java.util.concurrent.LinkedBlockingDeque
 
 class AnonymousTcpSession(
-    sourceAddress: InetAddress,
-    sourcePort: UShort,
-    destinationAddress: InetAddress,
-    destinationPort: UShort,
+    initialIpHeader: IpHeader,
+    initialTransportHeader: TransportHeader,
+    initialPayload: ByteArray,
     returnQueue: LinkedBlockingDeque<Packet>,
     protector: VpnProtector,
+    sessionManager: SessionManager,
 ) : TcpSession(
-        sourceAddress = sourceAddress,
-        sourcePort = sourcePort,
-        destinationAddress = destinationAddress,
-        destinationPort = destinationPort,
+        initialIpHeader = initialIpHeader,
+        initialTransportHeader = initialTransportHeader,
+        initialPayload = initialPayload,
         returnQueue = returnQueue,
         protector = protector,
+        sessionManager = sessionManager,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    override val tcpStateMachine: TcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.LISTEN), mtu, this)
+    override val tcpStateMachine: TcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.LISTEN), mtu(), this)
 
     // note: android doesn't suppor the open function with the protocol family, so just open like this and assume
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
@@ -43,15 +49,60 @@ class AnonymousTcpSession(
         return len
     }
 
+    override fun handlePacketFromClient(packet: Packet) {
+        val responsePackets = tcpStateMachine.processHeaders(packet.ipHeader!!, packet.nextHeaders!! as TcpHeader, packet.payload!!)
+        for (response in responsePackets) {
+            returnQueue.put(packet)
+        }
+        if (tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+            logger.debug("Tcp session is closed, removing from session table, {}", this)
+            // todo: we need this to be per-session at some point
+            // outgoingQueue.put(SentinelPacket)
+        }
+    }
+
     init {
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
-        // this should throw an exception upon timeout to connect which we should catch in the kanon proxy and
-        // handle by sending an Icmp unreachable packet back.
-        logger.debug("TCP connecting to {}:{}", destinationAddress, destinationPort)
-        channel.socket().connect(InetSocketAddress(destinationAddress, destinationPort.toInt()), 1000)
-        logger.debug("TCP Connected")
-        CoroutineScope(Dispatchers.IO).launch {
+        outgoingScope.launch {
+            try {
+                logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
+                channel.socket().connect(
+                    InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
+                    1000,
+                )
+                logger.debug("TCP Connected")
+                startIncomingHandling()
+            } catch (e: Exception) {
+                // this should catch any exceptions trying to make the TCP connection (timeout, not reachable etc.)
+                logger.error("Error creating the TCP session: ${e.message}")
+                val code =
+                    when (initialIpHeader.sourceAddress) {
+                        is Inet4Address -> IcmpV4DestinationUnreachableCodes.HOST_UNREACHABLE
+                        else -> IcmpV6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
+                    }
+                val mtu =
+                    if (initialIpHeader.sourceAddress is Inet4Address) {
+                        TcpOptionMaximumSegmentSize.defaultIpv4MSS
+                    } else {
+                        TcpOptionMaximumSegmentSize.defaultIpv6MSS
+                    }
+                val response =
+                    IcmpFactory.createDestinationUnreachable(
+                        code,
+                        // source address for the Icmp header, send it back to the client as if its the clients own OS
+                        // telling it that its unreachable
+                        initialIpHeader.sourceAddress,
+                        initialIpHeader,
+                        initialTransportHeader,
+                        initialPayload,
+                        mtu.toInt(),
+                    )
+                returnQueue.add(response)
+                incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
+                close()
+            }
+
             try {
                 while (channel.isOpen) {
                     do {
@@ -65,17 +116,11 @@ class AnonymousTcpSession(
         }
     }
 
-    private fun close() {
-        if (channel.isOpen) {
-            try {
-                channel.close()
-            } catch (e: Exception) {
-                logger.error("Failed to close channel", e)
-            }
-        }
-        val finPacket = super.close(true)
+    override fun close() {
+        val finPacket = teardown(true)
         if (finPacket != null) {
             returnQueue.add(finPacket)
         }
+        super.close() // stop the incoming and outgoing jobs
     }
 }

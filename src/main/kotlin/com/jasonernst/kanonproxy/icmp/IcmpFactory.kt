@@ -16,7 +16,6 @@ import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header.Companion.IP6_HEADER_SIZE
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
-import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
 import org.slf4j.LoggerFactory
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -81,9 +80,6 @@ object IcmpFactory {
         modifiedOriginalRequestBuffer.put(ipHeader.toByteArray())
         modifiedOriginalRequestBuffer.put(reducedTransportBuffer)
         modifiedOriginalRequestBuffer.rewind()
-
-        val stringPacketDumper = StringPacketDumper(logger)
-        stringPacketDumper.dumpBuffer(modifiedOriginalRequestBuffer)
 
         val icmpHeader =
             when (ipHeader) {

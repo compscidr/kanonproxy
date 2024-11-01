@@ -9,7 +9,6 @@ import com.jasonernst.icmp.common.v4.IcmpV4EchoPacket
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.icmp.common.v6.IcmpV6EchoPacket
-import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpState
 import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
@@ -21,8 +20,6 @@ import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
-import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
-import com.jasonernst.knet.transport.udp.UdpHeader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,7 +28,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -47,11 +43,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 class KAnonProxy(
     val icmp: Icmp,
     val protector: VpnProtector = DummyProtector,
-) {
+) : SessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     // todo: we need a per-session queue, not a global queue, or we'll have collisions on the take calls
     private val outgoingQueue = LinkedBlockingDeque<Packet>()
+    private val incomingQueue = LinkedBlockingDeque<Packet>()
 
     // maps the source IP + port + protocol to a session (need extra work to handle multiple
     // clients (see the handlePackets function)
@@ -59,8 +56,10 @@ class KAnonProxy(
     val sessionTableBySessionKey = ConcurrentHashMap<String, Session>()
 
     private val isRunning = AtomicBoolean(false)
-    private var maintenanceJob = SupervisorJob() // https://stackoverflow.com/a/63407811
+    private val maintenanceJob = SupervisorJob() // https://stackoverflow.com/a/63407811
     private val maintenanceScope = CoroutineScope(Dispatchers.IO + maintenanceJob)
+    private val incomingQueueJob = SupervisorJob()
+    private val incomingQueueScope = CoroutineScope(Dispatchers.IO + incomingQueueJob)
 
     companion object {
         const val STALE_SESSION_MS = 5000L
@@ -75,22 +74,47 @@ class KAnonProxy(
         maintenanceScope.launch {
             sessionMaintenanceThread()
         }
+        incomingQueueScope.launch {
+            packetHandler()
+        }
         logger.debug("KAnonProxy started")
     }
 
     fun stop() {
         logger.debug("Stopping KAnonProxy")
         isRunning.set(false)
+        incomingQueue.put(SentinelPacket)
         runBlocking {
             maintenanceJob.cancelAndJoin()
+            incomingQueueJob.cancelAndJoin()
         }
         outgoingQueue.clear()
         sessionTableBySessionKey.clear()
         logger.debug("KAnonProxy stopped")
     }
 
+    fun packetHandler() {
+        logger.debug("Packet handler is started")
+        while (isRunning.get()) {
+            val packet = incomingQueue.take()
+            if (packet == SentinelPacket) {
+                logger.debug("Received sentinel packet, stopping packet handler")
+                break
+            }
+            handlePacket(packet)
+        }
+        logger.debug("Packet handler is stopped")
+    }
+
     /**
-     * Given the list of packets that have been received, this function will
+     * Enqueue packets to be processed by the KAnonProxy. This function is non-blocking.
+     */
+    fun handlePackets(packets: List<Packet>) {
+        incomingQueue.addAll(packets)
+    }
+
+    /**
+     * Given the current packet to be processed, this function will
      * determine if an active session is already present for the packet based
      * on the source, destination IP and port + protocol. If a session is not
      * active, a new session will be created and managed by the KAnonProxy.
@@ -99,36 +123,35 @@ class KAnonProxy(
      * in the response queue which can be retrieved by calling takeResponses(),
      * ideally in a separate thread.
      *
+     * // TODO: handle case where two+ clients are using the same source, destination IP, port + proto
+     *         //   probably need a UUID, or perhaps the VPN client address if this is used as a VPN server
+     *         //   note: this isn't needed for a TUN/TAP adapter or a packet dumper on Android since there
+     *         //   is only ever one "client". It would be needed for a VPN server, or a multi-hop internet
+     *         //   sharing app on Android.
      */
-    fun handlePackets(packets: List<Packet>) {
+    private fun handlePacket(packet: Packet) {
         if (!isRunning.get()) {
             logger.warn("KAnonProxy is not running, ignoring packets")
             return
         }
-        // TODO: handle case where two+ clients are using the same source, destination IP, port + proto
-        //   probably need a UUID, or perhaps the VPN client address if this is used as a VPN server
-        //   note: this isn't needed for a TUN/TAP adapter or a packet dumper on Android since there
-        //   is only ever one "client". It would be needed for a VPN server, or a multi-hop internet
-        //   sharing app on Android.
-        packets.forEach { packet ->
-            if (packet.ipHeader == null || packet.nextHeaders == null || packet.payload == null) {
-                logger.debug("missing header(s) or payload, skipping packet")
-                return@forEach
+
+        if (packet.ipHeader == null || packet.nextHeaders == null || packet.payload == null) {
+            logger.debug("missing header(s) or payload, skipping packet")
+            return
+        }
+        when (packet.nextHeaders) {
+            is TransportHeader -> {
+                handleTransportPacket(packet.ipHeader!!, packet.nextHeaders as TransportHeader, packet.payload!!)
             }
-            when (packet.nextHeaders) {
-                is TransportHeader -> {
-                    handleTransportPacket(packet.ipHeader!!, packet.nextHeaders as TransportHeader, packet.payload!!)
-                }
 
-                is IcmpNextHeaderWrapper -> {
-                    val icmpPacket = (packet.nextHeaders as IcmpNextHeaderWrapper).icmpHeader
-                    logger.debug("Got Icmp packet {}", icmpPacket)
-                    handleIcmpPacket(packet.ipHeader!!, icmpPacket)
-                }
+            is IcmpNextHeaderWrapper -> {
+                val icmpPacket = (packet.nextHeaders as IcmpNextHeaderWrapper).icmpHeader
+                logger.debug("Got Icmp packet {}", icmpPacket)
+                handleIcmpPacket(packet.ipHeader!!, icmpPacket)
+            }
 
-                else -> {
-                    logger.error("Unsupported packet type: {}", packet.javaClass)
-                }
+            else -> {
+                logger.error("Unsupported packet type: {}", packet.javaClass)
             }
         }
     }
@@ -148,90 +171,23 @@ class KAnonProxy(
                 ipHeader.protocol,
             )
         val session =
-            try {
-                sessionTableBySessionKey.getOrPut(key) {
-                    isNewSession = true
-                    Session.getSession(
-                        ipHeader.sourceAddress,
-                        transportHeader.sourcePort,
-                        ipHeader.destinationAddress,
-                        transportHeader.destinationPort,
-                        ipHeader.protocol,
-                        outgoingQueue,
-                        protector,
-                    )
-                }
-            } catch (e: Exception) {
-                // this should catch any exceptions trying to make the connection for a TCP or UDP session
-                logger.error("Error creating session: ${e.message}")
-                val code =
-                    when (ipHeader) {
-                        is Ipv4Header -> IcmpV4DestinationUnreachableCodes.HOST_UNREACHABLE
-                        is Ipv6Header -> IcmpV6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
-                        else -> throw IllegalArgumentException("Unknown IP protocol: " + ipHeader::class.java.simpleName)
-                    }
-                val mtu =
-                    if (ipHeader is Ipv4Header) {
-                        TcpOptionMaximumSegmentSize.defaultIpv4MSS
-                    } else {
-                        TcpOptionMaximumSegmentSize.defaultIpv6MSS
-                    }
-                val response =
-                    IcmpFactory.createDestinationUnreachable(
-                        code,
-                        // source address for the Icmp header, send it back to the client as if its the clients own OS
-                        // telling it that its unreachable
-                        ipHeader.sourceAddress,
-                        ipHeader,
-                        transportHeader,
-                        payload,
-                        mtu.toInt(),
-                    )
-                outgoingQueue.add(response)
-                return
+            sessionTableBySessionKey.getOrPut(key) {
+                isNewSession = true
+                Session.getSession(
+                    ipHeader,
+                    transportHeader,
+                    payload,
+                    outgoingQueue,
+                    protector,
+                    this,
+                )
             }
         if (isNewSession) {
             logger.info("New session: {} with payload size: {}", session, payload.size)
         } else {
             session.lastHeard = System.currentTimeMillis()
         }
-        when (transportHeader) {
-            is UdpHeader -> {
-                runBlocking {
-                    withContext(Dispatchers.IO) {
-                        try {
-                            val bytesWrote = session.channel.write(ByteBuffer.wrap(payload))
-                            logger.debug("Wrote {} bytes to session {}", bytesWrote, session)
-                        } catch (e: Exception) {
-                            logger.error("Error writing to UDP channel: $e")
-                        }
-                    }
-                }
-            }
-            is TcpHeader -> {
-                handleTcpPacket(session as TcpSession, ipHeader, transportHeader, payload)
-                if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
-                    logger.debug("Tcp session is closed, removing from session table, {}", session)
-                    sessionTableBySessionKey.remove(key)
-
-                    // todo: we need this to be per-session at some point
-                    outgoingQueue.put(SentinelPacket)
-                }
-            }
-            else -> logger.error("Unsupported transport header type: {}", transportHeader.javaClass)
-        }
-    }
-
-    private fun handleTcpPacket(
-        session: TcpSession,
-        ipHeader: IpHeader,
-        tcpHeader: TcpHeader,
-        payload: ByteArray,
-    ) {
-        val responsePackets = session.tcpStateMachine.processHeaders(ipHeader, tcpHeader, payload)
-        for (packet in responsePackets) {
-            outgoingQueue.put(packet)
-        }
+        session.incomingQueue.add(Packet(ipHeader, transportHeader, payload))
     }
 
     /**
@@ -332,6 +288,7 @@ class KAnonProxy(
     }
 
     private suspend fun sessionMaintenanceThread() {
+        logger.debug("Session maintenance thread is started")
         while (isRunning.get()) {
             val startTime = System.currentTimeMillis()
             for (session in sessionTableBySessionKey.values) {
@@ -363,6 +320,7 @@ class KAnonProxy(
                 logger.warn("Retransmit thread took longer than one clock resolution")
             }
         }
+        logger.warn("Session maintenance thread is (stop)ped")
     }
 
     private suspend fun processRetransmits(session: TcpSession) {
@@ -401,5 +359,9 @@ class KAnonProxy(
     // todo: when we have per session queues, we will need a parameter like a key
     fun disconnectSession() {
         outgoingQueue.put(SentinelPacket)
+    }
+
+    override fun removeSession(session: Session) {
+        sessionTableBySessionKey.remove(session.getKey())
     }
 }

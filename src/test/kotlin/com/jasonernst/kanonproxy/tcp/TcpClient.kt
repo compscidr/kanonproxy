@@ -6,8 +6,10 @@ import com.jasonernst.kanonproxy.BidirectionalByteChannel
 import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
+import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.tcp.TcpHeader
+import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
 import io.mockk.mockk
@@ -20,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.SocketException
 import java.nio.ByteBuffer
@@ -33,21 +36,29 @@ import java.util.concurrent.LinkedBlockingDeque
  * Can also send a data stream and receive one.
  */
 class TcpClient(
-    sourceAddress: InetAddress,
-    destinationAddress: InetAddress,
-    sourcePort: UShort,
-    destinationPort: UShort,
+    private val sourceAddress: InetAddress,
+    private val destinationAddress: InetAddress,
+    private val sourcePort: UShort,
+    private val destinationPort: UShort,
     val kAnonProxy: KAnonProxy,
 ) : TcpSession(
-        sourceAddress = sourceAddress,
-        sourcePort = sourcePort,
-        destinationAddress = destinationAddress,
-        destinationPort = destinationPort,
+        null,
+        null,
+        null,
         returnQueue = LinkedBlockingDeque(),
+        mockk(relaxed = true),
         mockk(relaxed = true),
     ) {
     private val clientId = UUID.randomUUID()
     private val logger = LoggerFactory.getLogger(javaClass)
+
+    override val mtu: UShort =
+        if (sourceAddress is Inet4Address) {
+            TcpOptionMaximumSegmentSize.defaultIpv4MSS
+        } else {
+            TcpOptionMaximumSegmentSize.defaultIpv6MSS
+        }
+
     override val tcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.CLOSED), mtu, this)
 
     // this is where the state machine will write into for us to receive it here
@@ -161,6 +172,9 @@ class TcpClient(
                 mtu,
                 tcpStateMachine.transmissionControlBlock!!,
             )
+        initialIpHeader = synPacket.ipHeader
+        initialTransportHeader = synPacket.nextHeaders as TcpHeader
+        initialPayload = synPacket.payload
         logger.debug("$clientId Sending SYN to proxy: ${synPacket.nextHeaders}")
         outgoingPackets.add(synPacket)
 
@@ -234,7 +248,7 @@ class TcpClient(
      */
     fun closeClient(waitForTimeWait: Boolean = false) {
         // send the FIN
-        val finPacket = super.close(false)
+        val finPacket = super.teardown(false)
         if (finPacket != null) {
             logger.debug("Sending FIN to proxy: ${finPacket.nextHeaders}")
             outgoingPackets.add(finPacket)
@@ -286,4 +300,23 @@ class TcpClient(
             }
         }
     }
+
+    override fun toString(): String =
+        "TcpClient(sourceAddress='$sourceAddress', destinationAddress='$destinationAddress', sourcePort=$sourcePort, destinationPort=$destinationPort, clientId=$clientId)"
+
+    /**
+     * In the Tcp Client, this is actually handling packets it got from the proxy
+     */
+    override fun handlePacketFromClient(packet: Packet) {
+    }
+
+    override fun getSourcePort(): UShort = sourcePort
+
+    override fun getDestinationPort(): UShort = destinationPort
+
+    override fun getSourceAddress(): InetAddress = sourceAddress
+
+    override fun getDestinationAddress(): InetAddress = destinationAddress
+
+    override fun getProtocol(): UByte = IpType.TCP.value
 }
