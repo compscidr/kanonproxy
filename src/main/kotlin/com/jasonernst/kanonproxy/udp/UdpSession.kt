@@ -108,19 +108,14 @@ class UdpSession(
                     sourceAddress = initialIpHeader!!.destinationAddress as Inet4Address,
                     destinationAddress = initialIpHeader!!.sourceAddress as Inet4Address,
                     protocol = IpType.UDP.value,
-                    totalLength =
-                        (
-                            Ipv4Header.IP4_MIN_HEADER_LENGTH +
-                                udpHeader.totalLength +
-                                payload.size.toUShort()
-                        ).toUShort(),
+                    totalLength = (Ipv4Header.IP4_MIN_HEADER_LENGTH + UdpHeader.UDP_HEADER_LENGTH + udpHeader.totalLength).toUShort(),
                 )
             } else {
                 Ipv6Header(
                     sourceAddress = initialIpHeader!!.destinationAddress as Inet6Address,
                     destinationAddress = initialIpHeader!!.sourceAddress as Inet6Address,
                     protocol = IpType.UDP.value,
-                    payloadLength = (40u + udpHeader.totalLength).toUShort(),
+                    payloadLength = (Ipv6Header.IP6_HEADER_SIZE + UdpHeader.UDP_HEADER_LENGTH + udpHeader.totalLength).toUShort(),
                 )
             }
         val packet = Packet(ipHeader, udpHeader, payload)
