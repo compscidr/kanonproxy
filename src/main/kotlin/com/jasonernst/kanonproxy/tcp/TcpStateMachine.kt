@@ -810,14 +810,8 @@ class TcpStateMachine(
                 return@runBlocking emptyList()
             }
 
-        // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
-        // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
-        // on the mutex
-        if (tcpState.value == TcpState.CLOSE_WAIT) {
-            // todo: figure out this encapsulation thing
-            // return packets.plus(encapsulateSessionBuffer(session))
-        }
-        return packets
+        // we do this outside of the above block so we don't have a deadlock on the mutex
+        return packets.plus(encapsulateOutgoingData())
     }
 
     /**
@@ -1049,14 +1043,8 @@ class TcpStateMachine(
                 return@runBlocking emptyList()
             }
 
-        // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
-        // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
-        // on the mutex
-        if (tcpState.value == TcpState.CLOSE_WAIT) {
-            // TODO figure out this encapulate thing
-            // return packets.plus(encapsulateSessionBuffer(session))
-        }
-        return packets
+        // we do this outside of the above block so we don't have a deadlock on the mutex
+        return packets.plus(encapsulateOutgoingData())
     }
 
     /**
@@ -1310,14 +1298,9 @@ class TcpStateMachine(
                 // logger.warn("Shouldn't have got here")
                 return@runBlocking emptyList()
             }
-        // if we are in the CLOSE_WAIT state, we need to flush the buffer to the client and move
-        // into the LAST_ACK state. we do it outside of the above block so we don't have a deadlock
-        // on the mutex
-        if (tcpState.value == TcpState.TIME_WAIT || tcpState.value == TcpState.CLOSING) {
-            // todo figure out this encapsulate
-            // return packets.plus(encapsulateSessionBuffer(session))
-        }
-        return packets
+
+        // we do this outside of the above block so we don't have a deadlock on the mutex
+        return packets.plus(encapsulateOutgoingData())
     }
 
     private fun handleFinWait2State(
