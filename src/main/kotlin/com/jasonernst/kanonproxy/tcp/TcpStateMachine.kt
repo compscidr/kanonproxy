@@ -981,6 +981,7 @@ class TcpStateMachine(
                     // 7th: process the segment text
                     if (tcpHeader.sequenceNumber < transmissionControlBlock!!.rcv_nxt) {
                         logger.error("ALREADY RECEIVED SEGMENT, SHOULD IGNORE: $tcpHeader")
+                        return@runBlocking emptyList()
                     }
                     val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                     assert(payloadSize == payload.size.toUInt())
