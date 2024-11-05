@@ -46,10 +46,7 @@ class AnonymousTcpSession(
         val len = super.handleReturnTrafficLoop()
         if (len == 0 && tcpStateMachine.tcpState.value == TcpState.CLOSE_WAIT) {
             logger.warn("We're in CLOSE_WAIT, and we have no more data to recv from remote side, sending FIN")
-            val finPacket = teardown(true)
-            if (finPacket != null) {
-                returnQueue.add(finPacket)
-            }
+            close()
         }
         return len
     }
@@ -65,7 +62,7 @@ class AnonymousTcpSession(
             logger.debug("Tcp session is closed, removing from session table, {}", this)
             // todo: we need this to be per-session at some point
             returnQueue.put(SentinelPacket)
-            sessionManager.removeSession(this)
+            super.close()
         }
     }
 
@@ -109,11 +106,7 @@ class AnonymousTcpSession(
                     )
                 returnQueue.add(response)
                 incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
-                // close()
-                val finPacket = teardown(true)
-                if (finPacket != null) {
-                    returnQueue.add(finPacket)
-                }
+                close()
             }
 
             try {
@@ -124,12 +117,8 @@ class AnonymousTcpSession(
                 }
             } catch (e: Exception) {
                 logger.warn("Remote Tcp channel closed")
-                // close()
                 incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
-                val finPacket = teardown(true)
-                if (finPacket != null) {
-                    returnQueue.add(finPacket)
-                }
+                close()
             }
         }
     }
@@ -139,6 +128,7 @@ class AnonymousTcpSession(
         if (finPacket != null) {
             returnQueue.add(finPacket)
         }
-        super.close() // stop the incoming and outgoing jobs
+        // this should only be called when the state is actually CLOSED
+        // super.close() // stop the incoming and outgoing jobs
     }
 }
