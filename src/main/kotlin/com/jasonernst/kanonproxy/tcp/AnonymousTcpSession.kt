@@ -45,7 +45,11 @@ class AnonymousTcpSession(
     override fun handleReturnTrafficLoop(): Int {
         val len = super.handleReturnTrafficLoop()
         if (len == 0 && tcpStateMachine.tcpState.value == TcpState.CLOSE_WAIT) {
-            close()
+            logger.warn("We're in CLOSE_WAIT, and we have no more data to recv from remote side, sending FIN")
+            val finPacket = teardown(true)
+            if (finPacket != null) {
+                returnQueue.add(finPacket)
+            }
         }
         return len
     }
@@ -105,7 +109,11 @@ class AnonymousTcpSession(
                     )
                 returnQueue.add(response)
                 incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
-                close()
+                // close()
+                val finPacket = teardown(true)
+                if (finPacket != null) {
+                    returnQueue.add(finPacket)
+                }
             }
 
             try {
@@ -116,7 +124,12 @@ class AnonymousTcpSession(
                 }
             } catch (e: Exception) {
                 logger.warn("Remote Tcp channel closed")
-                close()
+                // close()
+                incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
+                val finPacket = teardown(true)
+                if (finPacket != null) {
+                    returnQueue.add(finPacket)
+                }
             }
         }
     }

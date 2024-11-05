@@ -218,6 +218,13 @@ class TcpHandlingTest {
         tcpClient.recv(recvBuffer)
 
         tcpClient.closeClient()
+
+        val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
+        tcpClient2.connect()
+        tcpClient2.send(ByteBuffer.wrap(payload))
+
+        tcpClient2.recv(recvBuffer)
+        tcpClient2.closeClient()
     }
 
     // todo: ipv6 tests
