@@ -301,13 +301,12 @@ class KAnonProxy(
             val startTime = System.currentTimeMillis()
             for (session in sessionTableBySessionKey.values) {
                 if (session.lastHeard < System.currentTimeMillis() - STALE_SESSION_MS) {
-                    logger.warn("Session {} is stale, removing", session)
+                    logger.warn("Session {} is stale, closing", session)
                     try {
                         session.channel.close()
                     } catch (e: Exception) {
                         logger.error("Error closing channel: ${e.message}")
                     }
-                    sessionTableBySessionKey.remove(session.getKey())
                     continue
                 }
                 if (session is TcpSession) {
