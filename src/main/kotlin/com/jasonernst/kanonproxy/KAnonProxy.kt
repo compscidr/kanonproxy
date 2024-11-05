@@ -170,6 +170,14 @@ class KAnonProxy(
                 transportHeader.destinationPort,
                 ipHeader.protocol,
             )
+        if (!sessionTableBySessionKey.containsKey(key)) {
+            if (transportHeader is TcpHeader) {
+                if (transportHeader.isSyn().not()) {
+                    logger.warn("non-syn packet for new session: {}, ignoring", key)
+                    return
+                }
+            }
+        }
         val session =
             sessionTableBySessionKey.getOrPut(key) {
                 isNewSession = true
