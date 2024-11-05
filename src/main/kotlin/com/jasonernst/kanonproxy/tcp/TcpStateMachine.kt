@@ -50,6 +50,7 @@ class TcpStateMachine(
     val mtu: UShort,
     val session: TcpSession,
     val receiveBufferSize: UShort = DEFAULT_BUFFER_SIZE.toUShort(),
+    val swapSourceDestination: Boolean = false, // only time we want this is if we're a tcpClient
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -811,7 +812,7 @@ class TcpStateMachine(
             }
 
         // we do this outside of the above block so we don't have a deadlock on the mutex
-        return packets.plus(encapsulateOutgoingData())
+        return packets.plus(encapsulateOutgoingData(swapSourceDestination))
     }
 
     /**
@@ -1044,7 +1045,7 @@ class TcpStateMachine(
             }
 
         // we do this outside of the above block so we don't have a deadlock on the mutex
-        return packets.plus(encapsulateOutgoingData())
+        return packets.plus(encapsulateOutgoingData(swapSourceDestination))
     }
 
     /**
@@ -1300,7 +1301,7 @@ class TcpStateMachine(
             }
 
         // we do this outside of the above block so we don't have a deadlock on the mutex
-        return packets.plus(encapsulateOutgoingData())
+        return packets.plus(encapsulateOutgoingData(swapSourceDestination))
     }
 
     private fun handleFinWait2State(
@@ -2663,7 +2664,9 @@ class TcpStateMachine(
                     outgoingBuffer.get(payloadCopy)
                     if (outgoingBuffer.remaining() == 0) {
                         isPush = true
+                        outgoingBuffer.clear()
                     }
+                    logger.debug("after payload get position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
 
                     val latestAck =
                         if (session.lastestACKs.isNotEmpty()) {

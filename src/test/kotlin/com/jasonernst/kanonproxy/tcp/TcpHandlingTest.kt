@@ -137,7 +137,7 @@ class TcpHandlingTest {
         val payload = "Test Data".toByteArray()
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val sourcePort: UShort = 12345u
-        val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)

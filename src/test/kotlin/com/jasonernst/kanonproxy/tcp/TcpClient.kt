@@ -61,7 +61,7 @@ class TcpClient(
             TcpOptionMaximumSegmentSize.defaultIpv6MSS
         }
 
-    override val tcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.CLOSED), mtu, this)
+    override val tcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.CLOSED), mtu, this, swapSourceDestination = true)
 
     // this is where the state machine will write into for us to receive it here
     override val channel: ByteChannel = BidirectionalByteChannel()
