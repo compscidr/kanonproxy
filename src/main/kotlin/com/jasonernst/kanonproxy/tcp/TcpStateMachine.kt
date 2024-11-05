@@ -757,6 +757,7 @@ class TcpStateMachine(
                                         transmissionControlBlock = transmissionControlBlock,
                                     )
                                 if (tcpHeader.isPsh()) {
+                                    session.isPsh.set(true)
                                     return@runBlocking listOf(ack)
                                 } else {
                                     val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
@@ -1008,6 +1009,7 @@ class TcpStateMachine(
                                 transmissionControlBlock = transmissionControlBlock,
                             )
                         if (tcpHeader.isPsh()) {
+                            session.isPsh.set(true)
                             logger.debug(
                                 "Received PSH in ESTABLISHED state, sending ACK " +
                                     "immediately SEQ: " +
@@ -1254,6 +1256,7 @@ class TcpStateMachine(
                                 transmissionControlBlock = transmissionControlBlock,
                             )
                         if (tcpHeader.isPsh()) {
+                            session.isPsh.set(true)
                             return@runBlocking listOf(ack)
                         } else {
                             val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())

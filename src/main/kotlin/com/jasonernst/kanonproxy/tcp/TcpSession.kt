@@ -13,6 +13,7 @@ import java.net.Inet6Address
 import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 abstract class TcpSession(
     initialIpHeader: IpHeader?,
@@ -30,6 +31,7 @@ abstract class TcpSession(
         sessionManager = sessionManager,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    val isPsh = AtomicBoolean(false) // set when we have accepted a PSH packet
 
     protected open val mtu =
         if (initialIpHeader == null) {
@@ -103,7 +105,7 @@ abstract class TcpSession(
                 return finPacket
             }
             else -> {
-                logger.warn("Close called in state that doesn't make sense: ${tcpStateMachine.tcpState}")
+                logger.warn("Close called in state that doesn't make sense: ${tcpStateMachine.tcpState.value}")
             }
         }
         return null

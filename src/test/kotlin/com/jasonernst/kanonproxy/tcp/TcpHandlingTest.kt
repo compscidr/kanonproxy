@@ -3,6 +3,7 @@ package com.jasonernst.kanonproxy.tcp
 import com.jasonernst.icmp.linux.IcmpLinux
 import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.kanonproxy.icmp.IcmpHandlingTest
+import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.testservers.server.TcpEchoServer
 import io.mockk.mockk
 import org.junit.jupiter.api.AfterAll
@@ -28,18 +29,24 @@ class TcpHandlingTest {
     private val kAnonProxy = KAnonProxy(IcmpLinux, mockk(relaxed = true))
 
     companion object {
-        val tcpEchoServer = TcpEchoServer()
+        private val tcpEchoServer = TcpEchoServer()
+        private val packetDumper = PcapNgTcpServerPacketDumper(isSimple = false)
+        private val staticLogger = LoggerFactory.getLogger(TcpHandlingTest::class.java)
 
         @JvmStatic
         @BeforeAll
         fun setup() {
             tcpEchoServer.start()
+            packetDumper.start()
+            staticLogger.debug("Delaying to connect to wireshark")
+            Thread.sleep(5000)
         }
 
         @JvmStatic
         @AfterAll
         fun teardown() {
             tcpEchoServer.stop()
+            packetDumper.stop()
         }
     }
 
@@ -60,7 +67,7 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
         tcpClient.closeClient()
     }
@@ -77,7 +84,7 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
         tcpClient.closeClient(true)
     }
@@ -93,12 +100,12 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
         tcpClient.closeClient()
         logger.debug("First session closed")
 
-        val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient2.connect()
         tcpClient2.closeClient()
     }
@@ -110,7 +117,7 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
 
         tcpClient.send(ByteBuffer.wrap(payload))
@@ -133,7 +140,7 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
 
         tcpClient.send(ByteBuffer.wrap(payload))
@@ -145,7 +152,7 @@ class TcpHandlingTest {
 
         assertArrayEquals(payload, recvBuffer.array())
 
-        val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient2.connect()
         tcpClient2.closeClient()
     }
@@ -157,7 +164,7 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
 
         // send, recv
@@ -191,8 +198,26 @@ class TcpHandlingTest {
         val destinationAddress = InetAddress.getByName(IcmpHandlingTest.UNREACHABLE_IPV4)
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy)
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         assertThrows<SocketException> { tcpClient.connect(2000) }
+    }
+
+    @Test
+    fun ipv4TcpHttp() {
+        val payload = "GET / HTTP/1.1\r\nHost: xkcd.com\r\n\r\n".toByteArray()
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("xkcd.com") as Inet4Address
+        val destinationPort: UShort = 80u
+
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
+        tcpClient.connect()
+        tcpClient.send(ByteBuffer.wrap(payload))
+
+        val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+        tcpClient.recv(recvBuffer)
+
+        tcpClient.closeClient()
     }
 
     // todo: ipv6 tests

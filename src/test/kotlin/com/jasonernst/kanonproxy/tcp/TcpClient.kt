@@ -10,7 +10,8 @@ import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
-import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
+import com.jasonernst.packetdumper.AbstractPacketDumper
+import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +42,7 @@ class TcpClient(
     private val sourcePort: UShort,
     private val destinationPort: UShort,
     val kAnonProxy: KAnonProxy,
+    val packetDumper: AbstractPacketDumper = DummyPacketDumper,
 ) : TcpSession(
         null,
         null,
@@ -63,8 +65,6 @@ class TcpClient(
 
     // this is where the state machine will write into for us to receive it here
     override val channel: ByteChannel = BidirectionalByteChannel()
-
-    private val packetDumper = PcapNgTcpServerPacketDumper(isSimple = false)
     private val stringDumper = StringPacketDumper()
 
     private val outgoingPackets = LinkedBlockingDeque<Packet>()
@@ -74,10 +74,6 @@ class TcpClient(
     private val writeJob: Job
 
     init {
-        // uncomment for debugging with wireshark
-        // packetDumper.start()
-        // Thread.sleep(5000) // give some time to connect
-
         isRunning = true
 
         readJob =
@@ -231,9 +227,15 @@ class TcpClient(
      * Will block until the buffer is full, a PSH is received, or the connection is closed
      */
     fun recv(buffer: ByteBuffer) {
+        logger.debug("Waiting for up to ${buffer.remaining()} bytes")
         while (buffer.hasRemaining()) {
             val byteRead = channel.read(buffer)
             logger.debug("READ: $byteRead")
+            if (isPsh.get()) {
+                isPsh.set(false)
+                logger.debug("PSH received, returning from read before buffer full")
+                break
+            }
 //            val packet = kAnonProxy.takeResponse()
 //            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
 //            // assumes everything arrives in order, which it is not guarenteed to do
@@ -241,6 +243,7 @@ class TcpClient(
 //                buffer.put(packet.payload)
 //            }
         }
+        logger.debug("Finished reading")
     }
 
     /**
@@ -289,7 +292,6 @@ class TcpClient(
             writeJob.join()
             logger.debug("Jobs finished")
         }
-        // packetDumper.stop()
         if (waitForTimeWait) {
             if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
                 throw RuntimeException("Failed to close")
