@@ -105,7 +105,7 @@ class AnonymousTcpSession(
                         mtu.toInt(),
                     )
                 returnQueue.add(response)
-                incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
+                // incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
                 close()
             }
 
@@ -117,7 +117,7 @@ class AnonymousTcpSession(
                 }
             } catch (e: Exception) {
                 logger.warn("Remote Tcp channel closed")
-                incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
+                // incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
                 close()
             }
         }
