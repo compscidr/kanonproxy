@@ -1019,6 +1019,13 @@ class TcpStateMachine(
 
                     // 8th: check the FIN bit
                     if (tcpHeader.isFin()) {
+                        // todo: what happens if we don't have enough cwnd to encapulate
+                        // everything? we probably need to hold off on tear down just now
+                        // and then only teardown when the buffer is totally flushed and
+                        // there is nothing more to read from the server side
+                        // try to flush any remaining packets
+                        val flushpackets = encapsulateOutgoingData(swapSourceDestination) as MutableList
+
                         logger.debug("Received FIN in ESTABLISHED state, transitioning to CLOSE_WAIT: $tcpHeader")
                         transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
                         tcpState.value = TcpState.CLOSE_WAIT
@@ -1032,12 +1039,12 @@ class TcpStateMachine(
                                 ackNumber = transmissionControlBlock!!.rcv_nxt,
                                 transmissionControlBlock = transmissionControlBlock,
                             )
+                        flushpackets.add(ackPacket)
                         val finPacket = session.teardown()
                         if (finPacket != null) {
-                            return@runBlocking listOf(ackPacket, finPacket)
-                        } else {
-                            return@runBlocking listOf(ackPacket)
+                            flushpackets.add(finPacket)
                         }
+                        return@runBlocking flushpackets
                     }
                 }
                 // logger.warn("Shouldn't have got here")
