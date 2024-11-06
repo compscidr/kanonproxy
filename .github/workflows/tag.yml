@@ -20,8 +20,8 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Build with Gradle
-        run: ./gradlew build
+      - name: Assemble Gradle
+        run: ./gradlew assemble
       - run: echo "Build status report=${{ job.status }}."
       - name: Deploy to Sonatype / Maven Central
         # see signing variable names here: https://github.com/vanniktech/gradle-maven-publish-plugin/blob/da599468864f7be7f0c694f174baa797ba8bf189/plugin/src/integrationTest/kotlin/com/vanniktech/maven/publish/ProjectSpecRunner.kt#L229
