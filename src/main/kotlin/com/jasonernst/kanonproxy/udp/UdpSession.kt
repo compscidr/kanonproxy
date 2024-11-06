@@ -95,7 +95,6 @@ class UdpSession(
             }
             logger.debug("UDP session no longer listening for remote responses")
         }
-
     }
 
     override fun handlePayloadFromInternet(payload: ByteArray) {
