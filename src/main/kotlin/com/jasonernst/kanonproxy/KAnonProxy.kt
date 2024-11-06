@@ -12,6 +12,7 @@ import com.jasonernst.icmp.common.v6.IcmpV6EchoPacket
 import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpState
 import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
+import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpHeader
@@ -301,13 +302,15 @@ class KAnonProxy(
             val startTime = System.currentTimeMillis()
             for (session in sessionTableBySessionKey.values) {
                 if (session.lastHeard < System.currentTimeMillis() - STALE_SESSION_MS) {
-                    logger.warn("Session {} is stale, closing", session)
-                    try {
-                        session.channel.close()
-                    } catch (e: Exception) {
-                        logger.error("Error closing channel: ${e.message}")
+                    if (session is UdpSession) {
+                        logger.warn("Session {} is stale, closing", session)
+                        try {
+                            session.channel.close()
+                        } catch (e: Exception) {
+                            logger.error("Error closing channel: ${e.message}")
+                        }
+                        continue
                     }
-                    continue
                 }
                 if (session is TcpSession) {
                     processRetransmits(session)
