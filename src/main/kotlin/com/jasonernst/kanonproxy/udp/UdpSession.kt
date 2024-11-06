@@ -49,6 +49,7 @@ class UdpSession(
         }
 
     init {
+        val session = this
         outgoingScope.launch {
             try {
                 logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
@@ -90,9 +91,11 @@ class UdpSession(
                 } while (channel.isOpen && len > -1)
             } catch (e: Exception) {
                 logger.warn("Remote Udp channel closed")
+                sessionManager.removeSession(session)
             }
             logger.debug("UDP session no longer listening for remote responses")
         }
+
     }
 
     override fun handlePayloadFromInternet(payload: ByteArray) {
