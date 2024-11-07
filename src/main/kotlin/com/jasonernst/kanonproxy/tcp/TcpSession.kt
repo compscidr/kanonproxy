@@ -33,6 +33,9 @@ abstract class TcpSession(
     private val logger = LoggerFactory.getLogger(javaClass)
     val isPsh = AtomicBoolean(false) // set when we have accepted a PSH packet
 
+    // set when teardown has been called but the outgoing buffer is not empty
+    val tearDownPending = AtomicBoolean(false)
+
     protected open val mtu =
         if (initialIpHeader == null) {
             logger.warn("Initial IP header is null, can't determine MTU")
@@ -65,6 +68,13 @@ abstract class TcpSession(
      */
     fun teardown(swapSourceAndDestination: Boolean = true): Packet? {
         logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value} swap?: $swapSourceAndDestination")
+
+        if (tcpStateMachine.outgoingBytesToSend() > 0) {
+            logger.debug("Outgoing bytes to send, setting teardown pending")
+            tearDownPending.set(true)
+            return null
+        }
+
         if (tcpStateMachine.transmissionControlBlock == null) {
             logger.debug("No TCB, returning to CLOSED")
             tcpStateMachine.tcpState.value = TcpState.CLOSED

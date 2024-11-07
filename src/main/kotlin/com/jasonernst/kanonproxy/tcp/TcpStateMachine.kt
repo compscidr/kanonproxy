@@ -2610,6 +2610,14 @@ class TcpStateMachine(
         }
     }
 
+    fun outgoingBytesToSend(): Int {
+        return runBlocking {
+            tcbMutex.withLock {
+                return@runBlocking outgoingBuffer.position()
+            }
+        }
+    }
+
     /**
      * We assume that the buffer is positioned after the data to be encapsulated. Once it's been encapsulated, it's
      * removed from this buffer. The encapsulated packets are returned and also stored in the retransmit queue. Packets
@@ -2692,6 +2700,13 @@ class TcpStateMachine(
                         isPush = true
                         outgoingBuffer.clear()
                         logger.debug("ENC after clear position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                        if (session.tearDownPending.get()) {
+                            logger.debug("TEARDOWN PENDING, sending FIN")
+                            val finPacket = session.teardown()
+                            if (finPacket != null) {
+                                packets.add(finPacket)
+                            }
+                        }
                     } else {
                         outgoingBuffer.compact()
                         logger.debug("ENC after compact position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
