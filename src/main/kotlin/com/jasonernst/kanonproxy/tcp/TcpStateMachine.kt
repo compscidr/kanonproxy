@@ -741,7 +741,7 @@ class TcpStateMachine(
                                         session.channel.write(buffer)
                                     }
                                 } catch (e: Exception) {
-                                    val packet = session.teardown()
+                                    val packet = session.teardown(swapSourceDestination)
                                     if (packet != null) {
                                         return@runBlocking listOf(packet)
                                     } else {
@@ -782,7 +782,7 @@ class TcpStateMachine(
                                         ackNumber = transmissionControlBlock!!.rcv_nxt,
                                         transmissionControlBlock = transmissionControlBlock,
                                     )
-                                val finPacket = session.teardown()
+                                val finPacket = session.teardown(swapSourceDestination)
                                 if (finPacket != null) {
                                     return@runBlocking listOf(ackPacket, finPacket)
                                 } else {
@@ -989,7 +989,7 @@ class TcpStateMachine(
                                 session.channel.write(buffer)
                             }
                         } catch (e: Exception) {
-                            val packet = session.teardown()
+                            val packet = session.teardown(swapSourceDestination)
                             if (packet != null) {
                                 return@runBlocking listOf(packet)
                             } else {
@@ -1043,7 +1043,7 @@ class TcpStateMachine(
                                 transmissionControlBlock = transmissionControlBlock,
                             )
                         flushpackets.add(ackPacket)
-                        val finPacket = session.teardown()
+                        val finPacket = session.teardown(swapSourceDestination)
                         if (finPacket != null) {
                             flushpackets.add(finPacket)
                         }
@@ -1241,7 +1241,7 @@ class TcpStateMachine(
                                 session.channel.write(buffer)
                             }
                         } catch (e: Exception) {
-                            val packet = session.teardown()
+                            val packet = session.teardown(swapSourceDestination)
                             if (packet != null) {
                                 return@runBlocking listOf(packet)
                             } else {
@@ -1480,7 +1480,7 @@ class TcpStateMachine(
                             session.channel.write(buffer)
                         }
                     } catch (e: Exception) {
-                        val packet = session.teardown()
+                        val packet = session.teardown(swapSourceDestination)
                         if (packet != null) {
                             return@runBlocking listOf(packet)
                         } else {

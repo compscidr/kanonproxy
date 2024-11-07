@@ -64,7 +64,7 @@ abstract class TcpSession(
      * else do nothing.
      */
     fun teardown(swapSourceAndDestination: Boolean = true): Packet? {
-        logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value}")
+        logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value} swap?: $swapSourceAndDestination")
         if (tcpStateMachine.transmissionControlBlock == null) {
             logger.debug("No TCB, returning to CLOSED")
             tcpStateMachine.tcpState.value = TcpState.CLOSED

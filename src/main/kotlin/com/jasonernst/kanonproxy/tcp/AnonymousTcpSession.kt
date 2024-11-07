@@ -46,7 +46,10 @@ class AnonymousTcpSession(
         val len = super.handleReturnTrafficLoop(maxRead)
         if (len == 0 && tcpStateMachine.tcpState.value == TcpState.CLOSE_WAIT) {
             logger.warn("We're in CLOSE_WAIT, and we have no more data to recv from remote side, sending FIN")
-            close()
+            val finPacket = teardown()
+            if (finPacket != null) {
+                returnQueue.add(finPacket)
+            }
         }
         return len
     }
@@ -73,6 +76,7 @@ class AnonymousTcpSession(
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             try {
                 logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
+                channel.socket().keepAlive = false
                 channel.socket().connect(
                     InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
                     1000,
@@ -111,21 +115,29 @@ class AnonymousTcpSession(
 
             try {
                 while (channel.isOpen) {
-                    do {
-                        val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
-                        val len =
-                            if (maxRead > 0) {
-                                handleReturnTrafficLoop(maxRead)
-                            } else {
-                                logger.warn("No more space in outgoing buffer, waiting for more space")
-                                0
-                            }
-                    } while (channel.isOpen && len > -1)
+                    val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
+                    val len =
+                        if (maxRead > 0) {
+                            handleReturnTrafficLoop(maxRead)
+                        } else {
+                            logger.warn("No more space in outgoing buffer, waiting for more space")
+                            0
+                        }
+                    if (len < 0) {
+                        break
+                    }
+                }
+                logger.warn("Remote Tcp channel closed")
+                val finPacket = teardown()
+                if (finPacket != null) {
+                    returnQueue.add(finPacket)
                 }
             } catch (e: Exception) {
-                logger.warn("Remote Tcp channel closed")
-                // incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
-                close()
+                logger.warn("Remote Tcp channel closed ${e.message}")
+                val finPacket = teardown()
+                if (finPacket != null) {
+                    returnQueue.add(finPacket)
+                }
             }
         }
     }
