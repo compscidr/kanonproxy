@@ -42,8 +42,8 @@ class AnonymousTcpSession(
     // that will do connect during open.
     override val channel: SocketChannel = SocketChannel.open()
 
-    override fun handleReturnTrafficLoop(): Int {
-        val len = super.handleReturnTrafficLoop()
+    override fun handleReturnTrafficLoop(maxRead: Int): Int {
+        val len = super.handleReturnTrafficLoop(maxRead)
         if (len == 0 && tcpStateMachine.tcpState.value == TcpState.CLOSE_WAIT) {
             logger.warn("We're in CLOSE_WAIT, and we have no more data to recv from remote side, sending FIN")
             close()
@@ -112,7 +112,14 @@ class AnonymousTcpSession(
             try {
                 while (channel.isOpen) {
                     do {
-                        val len = handleReturnTrafficLoop()
+                        val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
+                        val len =
+                            if (maxRead > 0) {
+                                handleReturnTrafficLoop(maxRead)
+                            } else {
+                                logger.warn("No more space in outgoing buffer, waiting for more space")
+                                0
+                            }
                     } while (channel.isOpen && len > -1)
                 }
             } catch (e: Exception) {

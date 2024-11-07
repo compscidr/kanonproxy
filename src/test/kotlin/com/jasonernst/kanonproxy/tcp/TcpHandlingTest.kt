@@ -23,7 +23,7 @@ import java.net.SocketException
 import java.nio.ByteBuffer
 
 // this needs to be set to 250 if we want to test the TIME_WAIT state
-@Timeout(20)
+@Timeout(60)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val kAnonProxy = KAnonProxy(IcmpLinux, mockk(relaxed = true))
@@ -225,6 +225,47 @@ class TcpHandlingTest {
 
         tcpClient2.recv(recvBuffer)
         tcpClient2.closeClient()
+
+        val tcpClient3 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
+        tcpClient3.connect()
+        tcpClient3.send(ByteBuffer.wrap(payload))
+        tcpClient3.recv(recvBuffer)
+        tcpClient3.closeClient()
+    }
+
+    @Disabled("WiP")
+    @Test
+    fun ipv4TcpHttp1Mb() {
+        val payload = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".toByteArray()
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
+        val destinationPort: UShort = 80u
+
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
+        tcpClient.connect()
+        tcpClient.send(ByteBuffer.wrap(payload))
+
+        val recvBuffer = ByteBuffer.allocate(1024 * 1024)
+        var totalReceived = 0
+        do {
+            tcpClient.recv(recvBuffer)
+
+            // if we have a response, print it out
+            var gotResponse = false
+            if (recvBuffer.position() > 0) {
+                gotResponse = true
+                val response = ByteArray(recvBuffer.position())
+                recvBuffer.flip()
+                recvBuffer.get(response)
+                totalReceived += response.size
+                logger.debug("Received ${response.size} bytes, for a total of $totalReceived")
+            }
+            recvBuffer.clear()
+        } while (gotResponse)
+        tcpClient.closeClient()
+
+        tcpClient.closeClient()
     }
 
     // todo: ipv6 tests

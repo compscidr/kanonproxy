@@ -812,7 +812,9 @@ class TcpStateMachine(
             }
 
         // we do this outside of the above block so we don't have a deadlock on the mutex
-        return packets.plus(encapsulateOutgoingData(swapSourceDestination))
+        val encapsulatedPackets = encapsulateOutgoingData(swapSourceDestination)
+        retransmitQueue.addAll(encapsulatedPackets)
+        return packets.plus(encapsulatedPackets)
     }
 
     /**
@@ -1025,6 +1027,7 @@ class TcpStateMachine(
                         // there is nothing more to read from the server side
                         // try to flush any remaining packets
                         val flushpackets = encapsulateOutgoingData(swapSourceDestination) as MutableList
+                        retransmitQueue.addAll(flushpackets)
 
                         logger.debug("Received FIN in ESTABLISHED state, transitioning to CLOSE_WAIT: $tcpHeader")
                         transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
@@ -1052,7 +1055,9 @@ class TcpStateMachine(
             }
 
         // we do this outside of the above block so we don't have a deadlock on the mutex
-        return packets.plus(encapsulateOutgoingData(swapSourceDestination))
+        val encapsulatedPackets = encapsulateOutgoingData(swapSourceDestination)
+        retransmitQueue.addAll(encapsulatedPackets)
+        return packets.plus(encapsulatedPackets)
     }
 
     /**
@@ -1308,7 +1313,9 @@ class TcpStateMachine(
             }
 
         // we do this outside of the above block so we don't have a deadlock on the mutex
-        return packets.plus(encapsulateOutgoingData(swapSourceDestination))
+        val encapsulatedPackets = encapsulateOutgoingData(swapSourceDestination)
+        retransmitQueue.addAll(encapsulatedPackets)
+        return packets.plus(encapsulatedPackets)
     }
 
     private fun handleFinWait2State(
@@ -2576,19 +2583,29 @@ class TcpStateMachine(
     fun enqueueOutgoingData(buffer: ByteBuffer): Int {
         return runBlocking {
             outgoingMutex.withLock {
-                logger.debug("Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                logger.debug("ENQ: Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                 // if we've previously compacted we won't get into here (just to reset us from read mode to write mode)
                 if (outgoingBuffer.limit() != outgoingBuffer.capacity()) {
                     // this should set us up so that we are writing right after the last byte we wrote previously
                     // with a limit of the rest of the buffer
                     outgoingBuffer.compact()
-                    logger.debug("After compact Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                    logger.debug(
+                        "ENQ: After compact Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}",
+                    )
                 }
                 val bytesToEnqueue = min(buffer.remaining(), outgoingBuffer.remaining())
                 outgoingBuffer.put(buffer.array(), buffer.position(), bytesToEnqueue)
                 buffer.position(buffer.position() + bytesToEnqueue)
-                logger.debug("After write Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                logger.debug("ENQ: After write Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                 return@runBlocking bytesToEnqueue
+            }
+        }
+    }
+
+    fun availableOutgoingBufferSpace(): Int {
+        return runBlocking {
+            outgoingMutex.withLock {
+                return@runBlocking outgoingBuffer.remaining()
             }
         }
     }
@@ -2636,10 +2653,10 @@ class TcpStateMachine(
 
             outgoingMutex.withLock {
                 do {
-                    logger.debug("before flip Buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                    logger.debug("ENC before flip Buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                     var isPush = false
                     outgoingBuffer.flip()
-                    logger.debug("after flip Buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                    logger.debug("ENC after flip Buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                     // logger.debug("REMAINING: ${session.sendBuffer.remaining()}, MSS: ${session.tcpStateMachine.mss}")
                     // logger.debug("Session buffer: \n{}", BufferUtil.toHexString(session.sendBuffer, 0, session.sendBuffer.limit()))
                     if (outgoingBuffer.remaining() == 0) {
@@ -2663,18 +2680,22 @@ class TcpStateMachine(
                             }
                             cwnd - outstandingBytes
                         }
-                    logger.debug("Available send bytes: $availableSendBytes")
-                    // may need to adjust this to be the minimum of the mss and the remaining bytes
-                    val payloadSize = min(availableSendBytes.toInt(), outgoingBuffer.remaining())
-                    logger.debug("Actual send bytes: $payloadSize")
+                    logger.debug("ENC Available send bytes: $availableSendBytes")
+                    val adjustedForMssBytes = min(availableSendBytes, mss.toUInt())
+                    logger.debug("ENC Adjusted for Mss: $adjustedForMssBytes")
+                    val payloadSize = min(adjustedForMssBytes.toInt(), outgoingBuffer.remaining())
+                    logger.debug("ENC Actual send bytes (adjusted for buffer remaining): $payloadSize")
                     val payloadCopy = ByteArray(payloadSize)
                     outgoingBuffer.get(payloadCopy)
+                    logger.debug("ENC after payload get position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                     if (outgoingBuffer.remaining() == 0) {
                         isPush = true
                         outgoingBuffer.clear()
+                        logger.debug("ENC after clear position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                    } else {
+                        outgoingBuffer.compact()
+                        logger.debug("ENC after compact position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                     }
-                    logger.debug("after payload get position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
-
                     val latestAck =
                         if (session.lastestACKs.isNotEmpty()) {
                             (
@@ -2766,8 +2787,8 @@ class TcpStateMachine(
         }
 
         if (currentTime > rtoExpiry) {
-            // logger.error("RTO EXPIRY!!!!!!!!!")
             if (session.tcpStateMachine.retransmitQueue.isNotEmpty()) {
+                logger.error("RTO EXPIRY!!!!!!!!!")
                 session.tcpStateMachine.transmissionControlBlock!!.rto *= 2 // exponential backoff, double the RTO
                 session.tcpStateMachine.transmissionControlBlock!!.rto_expiry =
                     currentTime +
@@ -2832,18 +2853,24 @@ class TcpStateMachine(
      * acks which have been waiting longer than 500ms, and return them so they may be transmitted.
      */
     fun checkForReverseAcks(session: TcpSession): List<Packet> {
-        val acks = ArrayList<Packet>()
+        var mostRecentAck: Packet? = null
         val now = System.currentTimeMillis()
         for (ack in session.lastestACKs) {
             if (now - ack.timeout > 500) {
                 session.lastestACKs.remove(ack)
-                acks.add(ack.packet)
+                mostRecentAck = ack.packet
             } else {
                 // once we reach an unexpired one, the following ones won't be either so we
                 // can stop searching.
                 break
             }
         }
-        return acks
+
+        // only return the last one we added since its the most recent
+        if (mostRecentAck != null) {
+            return listOf(mostRecentAck)
+        } else {
+            return emptyList()
+        }
     }
 }

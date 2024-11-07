@@ -18,6 +18,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
 
 abstract class Session(
     var initialIpHeader: IpHeader?,
@@ -29,7 +30,7 @@ abstract class Session(
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     abstract val channel: ByteChannel
-    private val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+    protected val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
     var lastHeard = System.currentTimeMillis()
     private val outgoingJob = SupervisorJob() // https://stackoverflow.com/a/63407811
     protected val outgoingScope = CoroutineScope(Dispatchers.IO + outgoingJob)
@@ -77,7 +78,9 @@ abstract class Session(
     override fun toString(): String =
         "Session(sourceAddress='${getSourceAddress()}', sourcePort=${getSourcePort()}, destinationAddress='${getDestinationAddress()}', destinationPort=${getDestinationPort()}, protocol=${getProtocol()})"
 
-    open fun handleReturnTrafficLoop(): Int {
+    open fun handleReturnTrafficLoop(maxRead: Int): Int {
+        val realLimit = min(maxRead, readBuffer.capacity())
+        readBuffer.limit(realLimit)
         val len = channel.read(readBuffer)
         if (len > 0) {
             lastHeard = System.currentTimeMillis()

@@ -4,6 +4,7 @@ import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachablePacket
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.kanonproxy.BidirectionalByteChannel
 import com.jasonernst.kanonproxy.KAnonProxy
+import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpType
@@ -14,14 +15,9 @@ import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
 import io.mockk.mockk
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.takeWhile
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -72,6 +68,8 @@ class TcpClient(
     private var isRunning = false
     private val readJob: Job
     private val writeJob: Job
+    private val maintenanceJob = SupervisorJob() // https://stackoverflow.com/a/63407811
+    private val maintenanceScope = CoroutineScope(Dispatchers.IO + maintenanceJob)
 
     init {
         isRunning = true
@@ -87,6 +85,10 @@ class TcpClient(
                 Thread.currentThread().name = "TcpClient reader $clientId"
                 readerThread()
             }
+
+        maintenanceScope.launch {
+            sessionMaintenanceThread()
+        }
     }
 
     fun writerThread() {
@@ -142,10 +144,38 @@ class TcpClient(
         }
     }
 
+    private suspend fun sessionMaintenanceThread() {
+        logger.debug("Session maintenance thread is started")
+        while (isRunning) {
+            val startTime = System.currentTimeMillis()
+            val reverseAcks = tcpStateMachine.checkForReverseAcks(this)
+            for (reverseAck in reverseAcks) {
+                logger.warn(
+                    "Waited over 500 ms for reverse traffic, enqueuing ACK " +
+                        "${(reverseAck.nextHeaders as TcpHeader).acknowledgementNumber}",
+                )
+                outgoingPackets.add(reverseAck)
+            }
+
+            val endTime = System.currentTimeMillis()
+            val elapsed = endTime - startTime
+            val idealSleep = (G * 1000).toLong()
+
+            // if it took longer than one clock resolution, just keep processing
+            // otherwise sleep for the difference
+            if (idealSleep - elapsed > 0) {
+                delay(idealSleep - elapsed)
+            } else {
+                logger.warn("Retransmit thread took longer than one clock resolution")
+            }
+        }
+        logger.warn("Session maintenance thread is (stop)ped")
+    }
+
     /**
      * Blocks until the three-way handshake completes, or fails
      */
-    fun connect(timeOutMs: Long = 1000) {
+    fun connect(timeOutMs: Long = 2000) {
         if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
             throw RuntimeException("Can't connect, current session isn't closed")
         }
