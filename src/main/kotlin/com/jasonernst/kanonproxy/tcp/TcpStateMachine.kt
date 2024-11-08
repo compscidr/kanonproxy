@@ -1014,9 +1014,11 @@ class TcpStateMachine(
                                     "${(ack.nextHeaders as TcpHeader).sequenceNumber} ACK: " +
                                     "${(ack.nextHeaders as TcpHeader).acknowledgementNumber}",
                             )
+                            return@runBlocking listOf(ack)
+                        } else {
+                            val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
+                            session.lastestACKs.add(retransmittablePacket)
                         }
-                        val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
-                        session.lastestACKs.add(retransmittablePacket)
                     }
 
                     // 8th: check the FIN bit
