@@ -2799,7 +2799,7 @@ class TcpStateMachine(
         val currentTime = System.currentTimeMillis()
         val rtoExpiry = session.tcpStateMachine.transmissionControlBlock?.rto_expiry ?: 0L
         if (rtoExpiry == 0L) {
-            logger.error("RTO EXPIRY UNSET, can't check for packet timeouts")
+            logger.error("RTO EXPIRY UNSET, can't check for packet timeouts for session: $session")
             return retransmits
         }
 
