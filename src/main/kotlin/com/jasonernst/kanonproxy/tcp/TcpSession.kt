@@ -67,10 +67,10 @@ abstract class TcpSession(
      * else do nothing.
      */
     fun teardown(swapSourceAndDestination: Boolean = true): Packet? {
-        logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value} swap?: $swapSourceAndDestination")
+        logger.debug("Tcp session TEARDOWN function called in tcpState: ${tcpStateMachine.tcpState.value} swap?: $swapSourceAndDestination")
 
         if (tcpStateMachine.outgoingBytesToSend() > 0) {
-            logger.debug("Outgoing bytes to send, setting teardown pending")
+            logger.debug("Outgoing bytes to send, setting TEARDOWN pending")
             tearDownPending.set(true)
             return null
         }
