@@ -2883,11 +2883,11 @@ class TcpStateMachine(
             }
         }
 
-        // only return the last one we added since its the most recent
-        if (mostRecentAck != null) {
-            return listOf(mostRecentAck)
+        // only return the last one we added since it's the most recent
+        return if (mostRecentAck != null) {
+            listOf(mostRecentAck)
         } else {
-            return emptyList()
+            emptyList()
         }
     }
 }
