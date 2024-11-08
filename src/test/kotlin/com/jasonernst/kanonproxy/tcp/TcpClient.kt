@@ -13,6 +13,7 @@ import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
+import com.jasonernst.packetdumper.ethernet.EtherType
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
@@ -64,7 +65,7 @@ class TcpClient(
             TcpOptionMaximumSegmentSize.defaultIpv6MSS
         }
 
-    override val tcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.CLOSED), mtu, this, swapSourceDestination = false)
+    override val tcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.CLOSED), mtu, this, swapSourceDestination = true)
 
     // this is where the state machine will write into for us to receive it here
     override val channel: ByteChannel = BidirectionalByteChannel()
@@ -108,7 +109,7 @@ class TcpClient(
             logger.debug("Sending to proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet)
             packetDumper.dumpBuffer(
                 ByteBuffer.wrap(packet.toByteArray()),
-                etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
+                etherType = EtherType.DETECT,
             )
             kAnonProxy.handlePackets(listOf(packet))
         }
@@ -128,7 +129,7 @@ class TcpClient(
             logger.debug("Received from proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet.nextHeaders)
             packetDumper.dumpBuffer(
                 ByteBuffer.wrap(packet.toByteArray()),
-                etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
+                etherType = EtherType.DETECT,
             )
 
             if (packet.nextHeaders is TcpHeader) {
@@ -245,19 +246,15 @@ class TcpClient(
             outgoingPackets.addAll(packets)
         }
 
-        // todo: convert this to a flow so we don't need to stupid sleep
-        while (tcpStateMachine.transmissionControlBlock!!.snd_una < finSequenceNumber) {
-            logger.debug("waiting for sent data to be ack'd")
-            Thread.sleep(100)
+        runBlocking {
+            tcpStateMachine.transmissionControlBlock!!
+                .snd_una
+                .takeWhile {
+                    it < finSequenceNumber
+                }.collect {
+                    logger.debug("ACK'd: $it, waiting for $finSequenceNumber")
+                }
         }
-
-//
-//        val packets = tcpStateMachine.encapsulateBuffer(buffer, swapSourceDestination = true)
-//        for (packet in packets) {
-//            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
-//            logger.debug("Sending to proxy: {}", packet)
-//        }
-//        kAnonProxy.handlePackets(packets)
     }
 
     /**
@@ -329,17 +326,20 @@ class TcpClient(
             outgoingPackets.add(SentinelPacket)
             logger.debug("Waiting for readjob to finish")
             readJob.join()
+            if (!waitForTimeWait) {
+                kAnonProxy.disconnectSession()
+            }
             logger.debug("Waiting for writejob to finish")
             writeJob.join()
             logger.debug("Jobs finished")
         }
         if (waitForTimeWait) {
             if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
-                throw RuntimeException("Failed to close")
+                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
             }
         } else {
-            if (tcpStateMachine.tcpState.value != TcpState.TIME_WAIT) {
-                throw RuntimeException("Failed to close")
+            if (tcpStateMachine.tcpState.value != TcpState.TIME_WAIT && tcpStateMachine.tcpState.value != TcpState.CLOSED) {
+                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
             }
         }
     }

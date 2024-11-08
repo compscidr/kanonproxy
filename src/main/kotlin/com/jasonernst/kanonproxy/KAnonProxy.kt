@@ -110,7 +110,7 @@ class KAnonProxy(
     /**
      * Enqueue packets to be processed by the KAnonProxy. This function is non-blocking.
      */
-    fun handlePackets(packets: List<Packet>) {
+    override fun handlePackets(packets: List<Packet>) {
         incomingQueue.addAll(packets)
     }
 
@@ -369,6 +369,10 @@ class KAnonProxy(
     // todo: when we have per session queues, we will need a parameter like a key
     fun disconnectSession() {
         outgoingQueue.put(SentinelPacket)
+    }
+
+    fun flushQueue() {
+        outgoingQueue.clear()
     }
 
     override fun removeSession(session: Session) {

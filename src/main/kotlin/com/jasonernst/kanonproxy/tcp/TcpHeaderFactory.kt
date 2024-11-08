@@ -318,7 +318,7 @@ object TcpHeaderFactory {
         transmissionControlBlock.send_ts_ok = true
         transmissionControlBlock.iss = startingSeq
         transmissionControlBlock.snd_nxt = startingSeq + 1u
-        transmissionControlBlock.snd_una = startingSeq
+        transmissionControlBlock.snd_una.value = startingSeq
         val tcpHeader = TcpHeader(sourcePort, destinationPort, startingSeq, 0u)
 
         val ipHeader =

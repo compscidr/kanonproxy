@@ -2,6 +2,7 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.knet.transport.tcp.TcpHeader.Companion.DEFAULT_WINDOW_SIZE
 import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Represents the Transmission Control Block (TCB) of a TCP connection. See https://www.rfc-editor.org/rfc/rfc9293.txt
@@ -9,7 +10,7 @@ import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
  */
 data class TransmissionControlBlock(
     // send sequence variables (maybe break into separate class)
-    var snd_una: UInt = 0u, // oldest unacknowledged sequence number
+    var snd_una: MutableStateFlow<UInt> = MutableStateFlow(0u), // oldest unacknowledged sequence number
     var snd_nxt: UInt = 0u, // next sequence number to be sent
     var snd_wnd: UShort = 0u, // this is set to the remote side's advertised window
     var snd_up: UShort = 0u,
@@ -71,9 +72,9 @@ data class TransmissionControlBlock(
      * Returns the difference between snd_una and snd_next while accounting for wraparound
      */
     fun outstandingBytes(): UInt =
-        if (snd_nxt >= snd_una) {
-            snd_nxt - snd_una
+        if (snd_nxt >= snd_una.value) {
+            snd_nxt - snd_una.value
         } else {
-            (UInt.MAX_VALUE - snd_una) + snd_nxt
+            (UInt.MAX_VALUE - snd_una.value) + snd_nxt
         }
 }

@@ -134,7 +134,10 @@ abstract class Session(
 
     open fun getProtocol(): UByte = initialIpHeader?.protocol ?: throw IllegalArgumentException("No protocol")
 
-    open fun close() {
+    open fun close(
+        removeSession: Boolean = true,
+        packet: Packet? = null,
+    ) {
         logger.debug("Closing session")
         if (channel.isOpen) {
             try {
@@ -145,11 +148,25 @@ abstract class Session(
         }
         isRunning.set(false)
         incomingQueue.add(SentinelPacket)
+        if (removeSession) {
+            // important we remove before the incoming job is cancelled because
+            // the handlers sometimes call close and we want' to make sure
+            // the session manager cleans up before the thread is cancelled.
+            sessionManager.removeSession(this)
+        }
+        if (packet != null) {
+            // the only time this should be the case is when we're re-establishing a session
+            // because we're going from TIME_WAIT to LISTEN because we have an acceptable
+            // sequence number
+
+            // important we do this before cancelling the incoming job because otherwise
+            // the thread will be cancelled before we handle the packet
+            sessionManager.handlePackets(listOf(packet))
+        }
         runBlocking {
             outgoingJob.cancel()
             incomingJob.cancel()
         }
         logger.debug("Session closed")
-        sessionManager.removeSession(this)
     }
 }

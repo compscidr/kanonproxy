@@ -73,6 +73,8 @@ abstract class TcpSession(
             logger.debug("Outgoing bytes to send, setting TEARDOWN pending")
             tearDownPending.set(true)
             return null
+        } else {
+            logger.debug("No outgoing bytes to send, proceeding with TEARDOWN")
         }
 
         if (tcpStateMachine.transmissionControlBlock == null) {
@@ -105,12 +107,12 @@ abstract class TcpSession(
                 tcpStateMachine.transmissionControlBlock = null
             }
             TcpState.SYN_RECEIVED, TcpState.ESTABLISHED -> {
-                logger.debug("Transitioning to FIN_WAIT_1")
+                logger.debug("Transitioning to FIN_WAIT_1, sending FIN: $finPacket")
                 tcpStateMachine.tcpState.value = TcpState.FIN_WAIT_1
                 return finPacket
             }
             TcpState.CLOSE_WAIT -> {
-                logger.debug("Transitioning to LAST_ACK")
+                logger.debug("Transitioning to LAST_ACK, sending FIN: $finPacket")
                 tcpStateMachine.tcpState.value = TcpState.LAST_ACK
                 return finPacket
             }
@@ -119,10 +121,6 @@ abstract class TcpSession(
             }
         }
         return null
-    }
-
-    fun reestablishConnection() {
-        TODO()
     }
 
     open fun mtu(): UShort =

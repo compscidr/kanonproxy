@@ -40,7 +40,7 @@ class AnonymousTcpSession(
     // note: android doesn't suppor the open function with the protocol family, so just open like this and assume
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
     // that will do connect during open.
-    override val channel: SocketChannel = SocketChannel.open()
+    override var channel: SocketChannel = SocketChannel.open()
 
     override fun handleReturnTrafficLoop(maxRead: Int): Int {
         val len = super.handleReturnTrafficLoop(maxRead)
@@ -65,7 +65,7 @@ class AnonymousTcpSession(
             logger.debug("Tcp session is closed, removing from session table, {}", this)
             // todo: we need this to be per-session at some point
             returnQueue.put(SentinelPacket)
-            super.close()
+            super.close(removeSession = true, packet = null)
         }
     }
 
@@ -140,14 +140,5 @@ class AnonymousTcpSession(
                 }
             }
         }
-    }
-
-    override fun close() {
-        val finPacket = teardown(true)
-        if (finPacket != null) {
-            returnQueue.add(finPacket)
-        }
-        // this should only be called when the state is actually CLOSED
-        // super.close() // stop the incoming and outgoing jobs
     }
 }
