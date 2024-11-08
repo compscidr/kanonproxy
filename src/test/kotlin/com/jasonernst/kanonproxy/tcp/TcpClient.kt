@@ -273,6 +273,10 @@ class TcpClient(
                 logger.debug("PSH received, returning from read before buffer full")
                 break
             }
+            if (tearDownPending.get()) {
+                logger.debug("TEARDOWN pending, returning from read before buffer full")
+                break
+            }
 //            val packet = kAnonProxy.takeResponse()
 //            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
 //            // assumes everything arrives in order, which it is not guarenteed to do
