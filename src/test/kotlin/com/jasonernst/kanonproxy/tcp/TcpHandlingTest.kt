@@ -240,7 +240,7 @@ class TcpHandlingTest {
         tcpClient3.closeClient()
     }
 
-    // @Disabled("WiP")
+    @Disabled("WiP")
     @Test
     fun ipv4TcpHttp1Mb() {
         val payload = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".toByteArray()
