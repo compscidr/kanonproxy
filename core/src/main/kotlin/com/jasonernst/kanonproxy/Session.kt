@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.util.concurrent.LinkedBlockingDeque
@@ -26,6 +27,8 @@ abstract class Session(
     var initialPayload: ByteArray?,
     val returnQueue: LinkedBlockingDeque<Packet>,
     val protector: VpnProtector,
+    val sessionManager: SessionManager,
+    val clientAddress: InetSocketAddress,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     abstract val channel: ByteChannel
@@ -57,13 +60,31 @@ abstract class Session(
             initialPayload: ByteArray,
             returnQueue: LinkedBlockingDeque<Packet>,
             protector: VpnProtector,
+            sessionManager: SessionManager,
+            clientAddress: InetSocketAddress,
         ): Session =
             when (initialIPHeader.protocol) {
                 IpType.UDP.value -> {
-                    UdpSession(initialIPHeader, initialTransportHeader, initialPayload, returnQueue, protector)
+                    UdpSession(
+                        initialIPHeader,
+                        initialTransportHeader,
+                        initialPayload,
+                        returnQueue,
+                        protector,
+                        sessionManager,
+                        clientAddress,
+                    )
                 }
                 IpType.TCP.value -> {
-                    AnonymousTcpSession(initialIPHeader, initialTransportHeader, initialPayload, returnQueue, protector)
+                    AnonymousTcpSession(
+                        initialIPHeader,
+                        initialTransportHeader,
+                        initialPayload,
+                        returnQueue,
+                        protector,
+                        sessionManager,
+                        clientAddress,
+                    )
                 }
                 else -> {
                     throw IllegalArgumentException("Unsupported protocol for session")
@@ -159,7 +180,7 @@ abstract class Session(
 
             // important we do this before cancelling the incoming job because otherwise
             // the thread will be cancelled before we handle the packet
-            sessionManager.handlePackets(listOf(packet))
+            sessionManager.handlePackets(listOf(packet), clientAddress)
         }
         runBlocking {
             outgoingJob.cancel()

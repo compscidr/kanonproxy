@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.Session
+import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
@@ -9,6 +10,7 @@ import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.Inet6Address
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingDeque
@@ -20,12 +22,16 @@ abstract class TcpSession(
     initialPayload: ByteArray?,
     returnQueue: LinkedBlockingDeque<Packet>,
     protector: VpnProtector,
+    sessionManager: SessionManager,
+    clientAddress: InetSocketAddress,
 ) : Session(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,
         initialPayload = initialPayload,
         returnQueue = returnQueue,
         protector = protector,
+        sessionManager = sessionManager,
+        clientAddress = clientAddress,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     val isPsh = AtomicBoolean(false) // set when we have accepted a PSH packet

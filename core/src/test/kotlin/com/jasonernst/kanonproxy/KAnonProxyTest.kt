@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -19,7 +20,6 @@ import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import org.junit.jupiter.api.Assertions.assertFalse
 
 @Timeout(10)
 class KAnonProxyTest {
@@ -79,12 +79,22 @@ class KAnonProxyTest {
         logger.debug("Got response: {}", response.nextHeaders)
         val parsedPayload = response.payload
         Assertions.assertArrayEquals(payload, parsedPayload)
-        assertTrue(kAnonProxy.haveSessionForClient(clientAddress, Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.UDP.value)))
+        assertTrue(
+            kAnonProxy.haveSessionForClient(
+                clientAddress,
+                Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.UDP.value),
+            ),
+        )
 
         runBlocking {
             delay(STALE_SESSION_MS + 1000)
         }
-        assertFalse(kAnonProxy.haveSessionForClient(clientAddress, Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.UDP.value)))
+        assertFalse(
+            kAnonProxy.haveSessionForClient(
+                clientAddress,
+                Session.getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.UDP.value),
+            ),
+        )
 
         kAnonProxy.stop()
     }

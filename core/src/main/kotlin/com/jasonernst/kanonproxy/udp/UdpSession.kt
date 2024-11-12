@@ -3,6 +3,7 @@ package com.jasonernst.kanonproxy.udp
 import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.kanonproxy.Session
+import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.knet.Packet
@@ -29,12 +30,16 @@ class UdpSession(
     initialPayload: ByteArray,
     returnQueue: LinkedBlockingDeque<Packet>,
     protector: VpnProtector,
+    sessionManager: SessionManager,
+    clientAddress: InetSocketAddress,
 ) : Session(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,
         initialPayload = initialPayload,
         returnQueue = returnQueue,
         protector = protector,
+        sessionManager = sessionManager,
+        clientAddress = clientAddress,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 

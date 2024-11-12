@@ -2,6 +2,7 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
+import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.knet.Packet
@@ -24,12 +25,16 @@ class AnonymousTcpSession(
     initialPayload: ByteArray,
     returnQueue: LinkedBlockingDeque<Packet>,
     protector: VpnProtector,
+    sessionManager: SessionManager,
+    clientAddress: InetSocketAddress,
 ) : TcpSession(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,
         initialPayload = initialPayload,
         returnQueue = returnQueue,
         protector = protector,
+        sessionManager = sessionManager,
+        clientAddress = clientAddress,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine: TcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.LISTEN), mtu(), this)

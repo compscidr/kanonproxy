@@ -3,21 +3,22 @@ package com.jasonernst.kanonproxy
 import com.jasonernst.kanonproxy.tuntap.TunTapDevice
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.Packet.Companion.parseStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetSocketAddress
-import java.nio.ByteBuffer
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.min
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
 
-class Client(private val socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080)) {
-
+class Client(
+    private val socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
+) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val socket = DatagramSocket()
     private val tunTapDevice = TunTapDevice()
@@ -31,22 +32,23 @@ class Client(private val socketAddress: InetSocketAddress = InetSocketAddress("1
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
-        private const val MAX_RECEIVE_BUFFER_SIZE = 1500   // max amount we can recv in one read (should be the MTU or bigger probably)
+        private const val MAX_RECEIVE_BUFFER_SIZE = 1500 // max amount we can recv in one read (should be the MTU or bigger probably)
 
         @JvmStatic
         fun main(args: Array<String>) {
-            val client = if (args.isEmpty()) {
-                println("Using default server: 127.0.0.1 8080")
-                Client()
-            } else {
-                if (args.size != 2) {
-                    println("Usage: Client <server> <port>")
-                    return
+            val client =
+                if (args.isEmpty()) {
+                    println("Using default server: 127.0.0.1 8080")
+                    Client()
+                } else {
+                    if (args.size != 2) {
+                        println("Usage: Client <server> <port>")
+                        return
+                    }
+                    val server = args[0]
+                    val port = args[1].toInt()
+                    Client(InetSocketAddress(server, port))
                 }
-                val server = args[0]
-                val port = args[1].toInt()
-                Client(InetSocketAddress(server, port))
-            }
             client.connect()
         }
     }

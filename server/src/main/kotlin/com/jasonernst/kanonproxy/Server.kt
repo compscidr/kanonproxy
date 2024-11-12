@@ -2,22 +2,21 @@ package com.jasonernst.kanonproxy
 
 import com.jasonernst.icmp.linux.IcmpLinux
 import com.jasonernst.knet.Packet
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.Inet4Address
-import java.net.InetSocketAddress
-import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentMap
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
-class Server(private val port: Int = 8080) {
-
+class Server(
+    private val port: Int = 8080,
+) {
     private lateinit var socket: DatagramSocket
     private val isRunning = AtomicBoolean(false)
     private val kAnonProxy = KAnonProxy(IcmpLinux)
@@ -28,21 +27,22 @@ class Server(private val port: Int = 8080) {
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
-        private const val MAX_RECEIVE_BUFFER_SIZE = 1500   // max amount we can recv in one read (should be the MTU or bigger probably)
+        private const val MAX_RECEIVE_BUFFER_SIZE = 1500 // max amount we can recv in one read (should be the MTU or bigger probably)
 
         @JvmStatic
         fun main(args: Array<String>) {
-            val server = if (args.isEmpty()) {
-                println("Using default port: 8080")
-                Server()
-            } else {
-                if (args.size != 1) {
-                    println("Usage: Server <port>")
-                    return
+            val server =
+                if (args.isEmpty()) {
+                    println("Using default port: 8080")
+                    Server()
+                } else {
+                    if (args.size != 1) {
+                        println("Usage: Server <port>")
+                        return
+                    }
+                    val port = args[0].toInt()
+                    Server(port)
                 }
-                val port = args[0].toInt()
-                Server(port)
-            }
             server.start()
         }
     }

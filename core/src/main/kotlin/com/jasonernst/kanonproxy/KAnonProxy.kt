@@ -19,14 +19,6 @@ import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
-import com.jasonernst.knet.transport.tcp.TcpHeader
-import java.net.Inet4Address
-import java.net.Inet6Address
-import java.net.InetSocketAddress
-import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.LinkedBlockingDeque
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +28,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetSocketAddress
+import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * @param icmp The Icmp object that will be used to send and receive Icmp packets. Depending on if
@@ -44,7 +43,7 @@ import org.slf4j.LoggerFactory
 class KAnonProxy(
     val icmp: Icmp,
     val protector: VpnProtector = DummyProtector,
-) {
+) : SessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     // We use a map of the client ip address + port (InetSocketAddress) to a queue of packets so that we don't have
@@ -88,7 +87,7 @@ class KAnonProxy(
             maintenanceJob.cancelAndJoin()
             incomingQueueJob.cancelAndJoin()
         }
-        for(queue in outgoingQueues.values) {
+        for (queue in outgoingQueues.values) {
             queue.clear()
         }
         sessionTablesBySessionKey.clear()
@@ -117,7 +116,10 @@ class KAnonProxy(
     /**
      * Enqueue packets to be processed by the KAnonProxy. This function is non-blocking.
      */
-    fun handlePackets(packets: List<Packet>, clientAddress: InetSocketAddress) {
+    override fun handlePackets(
+        packets: List<Packet>,
+        clientAddress: InetSocketAddress,
+    ) {
         for (packet in packets) {
             incomingQueue.add(Pair(packet, clientAddress))
         }
@@ -139,7 +141,10 @@ class KAnonProxy(
      *         //   is only ever one "client". It would be needed for a VPN server, or a multi-hop internet
      *         //   sharing app on Android.
      */
-    private fun handlePacket(packet: Packet, clientAddress: InetSocketAddress) {
+    private fun handlePacket(
+        packet: Packet,
+        clientAddress: InetSocketAddress,
+    ) {
         if (!isRunning.get()) {
             logger.warn("KAnonProxy is not running, ignoring packets")
             return
@@ -170,14 +175,16 @@ class KAnonProxy(
         ipHeader: IpHeader,
         transportHeader: TransportHeader,
         payload: ByteArray,
-        clientAddress: InetSocketAddress
+        clientAddress: InetSocketAddress,
     ) {
-        val sessionTableBySessionKey = sessionTablesBySessionKey.getOrPut(clientAddress) {
-            ConcurrentHashMap()
-        }
-        val outgoingQueue = outgoingQueues.getOrPut(clientAddress) {
-            LinkedBlockingDeque()
-        }
+        val sessionTableBySessionKey =
+            sessionTablesBySessionKey.getOrPut(clientAddress) {
+                ConcurrentHashMap()
+            }
+        val outgoingQueue =
+            outgoingQueues.getOrPut(clientAddress) {
+                LinkedBlockingDeque()
+            }
         var isNewSession = false
         val key =
             Session.getKey(
@@ -196,6 +203,8 @@ class KAnonProxy(
                     payload,
                     outgoingQueue,
                     protector,
+                    this,
+                    clientAddress,
                 )
             }
         if (isNewSession) {
@@ -221,11 +230,12 @@ class KAnonProxy(
     private fun handleIcmpPacket(
         ipHeader: IpHeader,
         icmpPacket: IcmpHeader,
-        clientAddress: InetSocketAddress
+        clientAddress: InetSocketAddress,
     ) {
-        val outgoingQueue = outgoingQueues.getOrPut(clientAddress) {
-            LinkedBlockingDeque()
-        }
+        val outgoingQueue =
+            outgoingQueues.getOrPut(clientAddress) {
+                LinkedBlockingDeque()
+            }
         if (icmpPacket is IcmpV4EchoPacket || icmpPacket is IcmpV6EchoPacket) {
             val result =
                 runBlocking {
@@ -301,9 +311,10 @@ class KAnonProxy(
      * separate thread for each client.
      */
     fun takeResponse(clientAddress: InetSocketAddress): Packet {
-        val outgoingQueue = outgoingQueues.getOrPut(clientAddress) {
-            LinkedBlockingDeque()
-        }
+        val outgoingQueue =
+            outgoingQueues.getOrPut(clientAddress) {
+                LinkedBlockingDeque()
+            }
         if (!isRunning.get()) {
             logger.warn("KAnonProxy is not running, ignoring packets")
             return SentinelPacket
@@ -390,7 +401,30 @@ class KAnonProxy(
         }*/
     }
 
-    fun haveSessionForClient(clientAddress: InetSocketAddress, key: String): Boolean {
-        return sessionTablesBySessionKey[clientAddress]?.containsKey(key) ?: false
+    fun haveSessionForClient(
+        clientAddress: InetSocketAddress,
+        key: String,
+    ): Boolean = sessionTablesBySessionKey[clientAddress]?.containsKey(key) ?: false
+
+    fun disconnectSession(clientAddress: InetSocketAddress) {
+        val outgoingQueue =
+            outgoingQueues.getOrPut(clientAddress) {
+                LinkedBlockingDeque()
+            }
+        outgoingQueue.put(SentinelPacket)
+    }
+
+    fun flushQueue(clientAddress: InetSocketAddress) {
+        val outgoingQueue =
+            outgoingQueues.getOrPut(clientAddress) {
+                LinkedBlockingDeque()
+            }
+        outgoingQueue.clear()
+    }
+
+    override fun removeSession(session: Session) {
+        logger.debug("Removing session: {}", session)
+        val sessionTableBySessionKey = sessionTablesBySessionKey[session.clientAddress] ?: return
+        sessionTableBySessionKey.remove(session.getKey())
     }
 }

@@ -1,10 +1,6 @@
 package com.jasonernst.kanonproxy
 
 import com.jasonernst.knet.SentinelPacket
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetSocketAddress
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -12,8 +8,16 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicBoolean
 
-class ProxySession(private val clientAddress: InetSocketAddress, private val kAnonProxy: KAnonProxy, private val socket: DatagramSocket) {
+class ProxySession(
+    private val clientAddress: InetSocketAddress,
+    private val kAnonProxy: KAnonProxy,
+    private val socket: DatagramSocket,
+) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val readFromProxyJob = SupervisorJob()
     private val readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)

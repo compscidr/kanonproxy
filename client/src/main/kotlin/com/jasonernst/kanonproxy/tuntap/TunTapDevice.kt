@@ -2,19 +2,19 @@ package com.jasonernst.kanonproxy.tuntap
 
 import com.sun.jna.Native
 import com.sun.jna.NativeLong
-import java.nio.ByteBuffer
 import jnr.enxio.channels.NativeSocketChannel
-import kotlin.experimental.or
 import org.slf4j.LoggerFactory
+import java.nio.ByteBuffer
+import kotlin.experimental.or
 
 class TunTapDevice {
-
     companion object {
         // the function call for configuring a TUN interface in ioctl from if_tun.h
         private val TUN_SET_IFF = NativeLong(0x400454caL)
         private const val O_RDWR = 2 // from fcntl-linux.h
         private const val IFACE_NAME = "kanon"
         private const val DEVICE_TYPE: Short = 0x0001 // 0x0001 for TUN, 0x0002 for TAP
+
         // from if_tun.h - tells the kernel to not add packet information header before the packet
         private const val FLAGS_IFF_NO_PI: Short = 0x1000
     }
@@ -42,9 +42,10 @@ class TunTapDevice {
         nativeSocketChannel = NativeSocketChannel(fd)
     }
 
-    fun read(readBuffer: ByteArray, bytesToRead: Int): Int {
-        return LibC.read(nativeSocketChannel.fd, readBuffer, NativeLong(bytesToRead.toLong()))
-    }
+    fun read(
+        readBuffer: ByteArray,
+        bytesToRead: Int,
+    ): Int = LibC.read(nativeSocketChannel.fd, readBuffer, NativeLong(bytesToRead.toLong()))
 
     fun write(buffer: ByteBuffer) {
         while (buffer.hasRemaining()) {

@@ -54,10 +54,11 @@ class TcpClient(
         null,
         returnQueue = LinkedBlockingDeque(),
         mockk(relaxed = true),
+        mockk(relaxed = true),
+        InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234),
     ) {
     private val clientId = UUID.randomUUID()
     private val logger = LoggerFactory.getLogger(javaClass)
-    private val clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234)
 
     override val mtu: UShort =
         if (sourceAddress is Inet4Address) {
@@ -328,7 +329,7 @@ class TcpClient(
             logger.debug("Waiting for readjob to finish")
             readJob.join()
             if (!waitForTimeWait) {
-                kAnonProxy.disconnectSession()
+                kAnonProxy.disconnectSession(clientAddress)
             }
             logger.debug("Waiting for writejob to finish")
             writeJob.join()

@@ -105,7 +105,7 @@ class TcpHandlingTest {
         tcpClient.connect()
         tcpClient.closeClient()
         logger.debug("First session closed")
-        kAnonProxy.flushQueue()
+        kAnonProxy.flushQueue(tcpClient.clientAddress)
 
         val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient2.connect()
@@ -151,7 +151,7 @@ class TcpHandlingTest {
         tcpClient.recv(recvBuffer)
 
         tcpClient.closeClient()
-        kAnonProxy.flushQueue()
+        kAnonProxy.flushQueue(tcpClient.clientAddress)
 
         assertArrayEquals(payload, recvBuffer.array())
 
