@@ -49,3 +49,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: libunittests
           files: ./kanonproxy/build/reports/jacoco/test/jacocoTestReport.xml
+      - name: End to End Tests
+        run: |
+          bash scripts/tuntap.sh $USER
