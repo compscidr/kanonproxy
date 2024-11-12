@@ -11,6 +11,7 @@ import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.icmp.common.v6.IcmpV6EchoPacket
 import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
+import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpHeader
@@ -186,14 +187,6 @@ class KAnonProxy(
                 transportHeader.destinationPort,
                 ipHeader.protocol,
             )
-        if (!sessionTableBySessionKey.containsKey(key)) {
-            if (transportHeader is TcpHeader) {
-                if (transportHeader.isSyn().not()) {
-                    logger.warn("non-syn packet for new session: {}, ignoring", key)
-                    return
-                }
-            }
-        }
         val session =
             sessionTableBySessionKey.getOrPut(key) {
                 isNewSession = true
@@ -325,16 +318,18 @@ class KAnonProxy(
             for (sessionTableBySessionKey in sessionTablesBySessionKey.values) {
                 for (session in sessionTableBySessionKey.values) {
                     if (session.lastHeard < System.currentTimeMillis() - STALE_SESSION_MS) {
-                        logger.warn("Session {} is stale, closing", session)
-                        withContext(Dispatchers.IO) {
-                            try {
-                                session.channel.close()
-                            } catch (e: Exception) {
-                                logger.error("Error closing channel: ${e.message}")
+                        if (session is UdpSession) {
+                            logger.warn("Session {} is stale, closing", session)
+                            withContext(Dispatchers.IO) {
+                                try {
+                                    session.channel.close()
+                                } catch (e: Exception) {
+                                    logger.error("Error closing channel: ${e.message}")
+                                }
+                                sessionTableBySessionKey.remove(session.getKey())
                             }
-                            sessionTableBySessionKey.remove(session.getKey())
+                            continue
                         }
-                        continue
                     }
                     if (session is TcpSession) {
                         processRetransmits(session)

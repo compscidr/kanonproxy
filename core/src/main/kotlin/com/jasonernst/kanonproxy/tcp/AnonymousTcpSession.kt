@@ -37,13 +37,16 @@ class AnonymousTcpSession(
     // note: android doesn't suppor the open function with the protocol family, so just open like this and assume
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
     // that will do connect during open.
-    override val channel: SocketChannel = SocketChannel.open()
+    override var channel: SocketChannel = SocketChannel.open()
 
-    override fun handleReturnTrafficLoop(): Int {
-        val len = super.handleReturnTrafficLoop()
+    override fun handleReturnTrafficLoop(maxRead: Int): Int {
+        val len = super.handleReturnTrafficLoop(maxRead)
         if (len == 0 && tcpStateMachine.tcpState.value == TcpState.CLOSE_WAIT) {
             logger.warn("We're in CLOSE_WAIT, and we have no more data to recv from remote side, sending FIN")
-            close()
+            val finPacket = teardown()
+            if (finPacket != null) {
+                returnQueue.add(finPacket)
+            }
         }
         return len
     }
@@ -59,7 +62,7 @@ class AnonymousTcpSession(
             logger.debug("Tcp session is closed, removing from session table, {}", this)
             // todo: we need this to be per-session at some point
             returnQueue.put(SentinelPacket)
-            super.close()
+            super.close(removeSession = true, packet = null)
         }
     }
 
@@ -70,6 +73,7 @@ class AnonymousTcpSession(
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             try {
                 logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
+                channel.socket().keepAlive = false
                 channel.socket().connect(
                     InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
                     1000,
@@ -108,24 +112,30 @@ class AnonymousTcpSession(
 
             try {
                 while (channel.isOpen) {
-                    do {
-                        val len = handleReturnTrafficLoop()
-                    } while (channel.isOpen && len > -1)
+                    val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
+                    val len =
+                        if (maxRead > 0) {
+                            handleReturnTrafficLoop(maxRead)
+                        } else {
+                            logger.warn("No more space in outgoing buffer, waiting for more space")
+                            0
+                        }
+                    if (len < 0) {
+                        break
+                    }
+                }
+                logger.warn("Remote Tcp channel closed")
+                val finPacket = teardown()
+                if (finPacket != null) {
+                    returnQueue.add(finPacket)
                 }
             } catch (e: Exception) {
-                logger.warn("Remote Tcp channel closed")
-                // incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
-                close()
+                logger.warn("Remote Tcp channel closed ${e.message}")
+                val finPacket = teardown()
+                if (finPacket != null) {
+                    returnQueue.add(finPacket)
+                }
             }
         }
-    }
-
-    override fun close() {
-        val finPacket = teardown(true)
-        if (finPacket != null) {
-            returnQueue.add(finPacket)
-        }
-        // this should only be called when the state is actually CLOSED
-        // super.close() // stop the incoming and outgoing jobs
     }
 }

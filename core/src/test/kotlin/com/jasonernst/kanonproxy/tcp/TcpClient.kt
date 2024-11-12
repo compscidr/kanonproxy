@@ -4,6 +4,7 @@ import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachablePacket
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.kanonproxy.BidirectionalByteChannel
 import com.jasonernst.kanonproxy.KAnonProxy
+import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.knet.network.ip.IpType
@@ -12,11 +13,14 @@ import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
+import com.jasonernst.packetdumper.ethernet.EtherType
 import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
@@ -73,6 +77,8 @@ class TcpClient(
     private var isRunning = false
     private val readJob: Job
     private val writeJob: Job
+    private val maintenanceJob = SupervisorJob() // https://stackoverflow.com/a/63407811
+    private val maintenanceScope = CoroutineScope(Dispatchers.IO + maintenanceJob)
 
     init {
         isRunning = true
@@ -88,6 +94,10 @@ class TcpClient(
                 Thread.currentThread().name = "TcpClient reader $clientId"
                 readerThread()
             }
+
+        maintenanceScope.launch {
+            sessionMaintenanceThread()
+        }
     }
 
     fun writerThread() {
@@ -100,7 +110,7 @@ class TcpClient(
             logger.debug("Sending to proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet)
             packetDumper.dumpBuffer(
                 ByteBuffer.wrap(packet.toByteArray()),
-                etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
+                etherType = EtherType.DETECT,
             )
             kAnonProxy.handlePackets(listOf(packet), clientAddress)
         }
@@ -120,7 +130,7 @@ class TcpClient(
             logger.debug("Received from proxy in state: {}: {}", tcpStateMachine.tcpState.value, packet.nextHeaders)
             packetDumper.dumpBuffer(
                 ByteBuffer.wrap(packet.toByteArray()),
-                etherType = com.jasonernst.packetdumper.ethernet.EtherType.DETECT,
+                etherType = EtherType.DETECT,
             )
 
             if (packet.nextHeaders is TcpHeader) {
@@ -143,10 +153,38 @@ class TcpClient(
         }
     }
 
+    private suspend fun sessionMaintenanceThread() {
+        logger.debug("Session maintenance thread is started")
+        while (isRunning) {
+            val startTime = System.currentTimeMillis()
+            val reverseAcks = tcpStateMachine.checkForReverseAcks(this)
+            for (reverseAck in reverseAcks) {
+                logger.warn(
+                    "Waited over 500 ms for reverse traffic, enqueuing ACK " +
+                        "${(reverseAck.nextHeaders as TcpHeader).acknowledgementNumber}",
+                )
+                outgoingPackets.add(reverseAck)
+            }
+
+            val endTime = System.currentTimeMillis()
+            val elapsed = endTime - startTime
+            val idealSleep = (G * 1000).toLong()
+
+            // if it took longer than one clock resolution, just keep processing
+            // otherwise sleep for the difference
+            if (idealSleep - elapsed > 0) {
+                delay(idealSleep - elapsed)
+            } else {
+                logger.warn("Retransmit thread took longer than one clock resolution")
+            }
+        }
+        logger.warn("Session maintenance thread is (stop)ped")
+    }
+
     /**
      * Blocks until the three-way handshake completes, or fails
      */
-    fun connect(timeOutMs: Long = 1000) {
+    fun connect(timeOutMs: Long = 2000) {
         if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
             throw RuntimeException("Can't connect, current session isn't closed")
         }
@@ -209,19 +247,15 @@ class TcpClient(
             outgoingPackets.addAll(packets)
         }
 
-        // todo: convert this to a flow so we don't need to stupid sleep
-        while (tcpStateMachine.transmissionControlBlock!!.snd_una < finSequenceNumber) {
-            logger.debug("waiting for sent data to be ack'd")
-            Thread.sleep(100)
+        runBlocking {
+            tcpStateMachine.transmissionControlBlock!!
+                .snd_una
+                .takeWhile {
+                    it < finSequenceNumber
+                }.collect {
+                    logger.debug("ACK'd: $it, waiting for $finSequenceNumber")
+                }
         }
-
-//
-//        val packets = tcpStateMachine.encapsulateBuffer(buffer, swapSourceDestination = true)
-//        for (packet in packets) {
-//            packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = com.jasonernst.packetdumper.ethernet.EtherType.IPv4)
-//            logger.debug("Sending to proxy: {}", packet)
-//        }
-//        kAnonProxy.handlePackets(packets)
     }
 
     /**
@@ -235,6 +269,10 @@ class TcpClient(
             if (isPsh.get()) {
                 isPsh.set(false)
                 logger.debug("PSH received, returning from read before buffer full")
+                break
+            }
+            if (tearDownPending.get()) {
+                logger.debug("TEARDOWN pending, returning from read before buffer full")
                 break
             }
 //            val packet = kAnonProxy.takeResponse()
@@ -289,17 +327,20 @@ class TcpClient(
             outgoingPackets.add(SentinelPacket)
             logger.debug("Waiting for readjob to finish")
             readJob.join()
+            if (!waitForTimeWait) {
+                kAnonProxy.disconnectSession()
+            }
             logger.debug("Waiting for writejob to finish")
             writeJob.join()
             logger.debug("Jobs finished")
         }
         if (waitForTimeWait) {
             if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
-                throw RuntimeException("Failed to close")
+                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
             }
         } else {
-            if (tcpStateMachine.tcpState.value != TcpState.TIME_WAIT) {
-                throw RuntimeException("Failed to close")
+            if (tcpStateMachine.tcpState.value != TcpState.TIME_WAIT && tcpStateMachine.tcpState.value != TcpState.CLOSED) {
+                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
             }
         }
     }

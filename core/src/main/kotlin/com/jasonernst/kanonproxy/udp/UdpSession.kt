@@ -84,7 +84,7 @@ class UdpSession(
             try {
                 logger.debug("UDP session listening for remote responses")
                 do {
-                    val len = handleReturnTrafficLoop()
+                    val len = handleReturnTrafficLoop(readBuffer.capacity())
                 } while (channel.isOpen && len > -1)
             } catch (e: Exception) {
                 logger.warn("Remote Udp channel closed")

@@ -30,6 +30,9 @@ abstract class TcpSession(
     private val logger = LoggerFactory.getLogger(javaClass)
     val isPsh = AtomicBoolean(false) // set when we have accepted a PSH packet
 
+    // set when teardown has been called but the outgoing buffer is not empty
+    val tearDownPending = AtomicBoolean(false)
+
     protected open val mtu =
         if (initialIpHeader == null) {
             logger.warn("Initial IP header is null, can't determine MTU")
@@ -61,7 +64,16 @@ abstract class TcpSession(
      * else do nothing.
      */
     fun teardown(swapSourceAndDestination: Boolean = true): Packet? {
-        logger.debug("Tcp session CLOSE function called in tcpState: ${tcpStateMachine.tcpState.value}")
+        logger.debug("Tcp session TEARDOWN function called in tcpState: ${tcpStateMachine.tcpState.value} swap?: $swapSourceAndDestination")
+
+        if (tcpStateMachine.outgoingBytesToSend() > 0) {
+            logger.debug("Outgoing bytes to send, setting TEARDOWN pending")
+            tearDownPending.set(true)
+            return null
+        } else {
+            logger.debug("No outgoing bytes to send, proceeding with TEARDOWN")
+        }
+
         if (tcpStateMachine.transmissionControlBlock == null) {
             logger.debug("No TCB, returning to CLOSED")
             tcpStateMachine.tcpState.value = TcpState.CLOSED
@@ -92,12 +104,12 @@ abstract class TcpSession(
                 tcpStateMachine.transmissionControlBlock = null
             }
             TcpState.SYN_RECEIVED, TcpState.ESTABLISHED -> {
-                logger.debug("Transitioning to FIN_WAIT_1")
+                logger.debug("Transitioning to FIN_WAIT_1, sending FIN: $finPacket")
                 tcpStateMachine.tcpState.value = TcpState.FIN_WAIT_1
                 return finPacket
             }
             TcpState.CLOSE_WAIT -> {
-                logger.debug("Transitioning to LAST_ACK")
+                logger.debug("Transitioning to LAST_ACK, sending FIN: $finPacket")
                 tcpStateMachine.tcpState.value = TcpState.LAST_ACK
                 return finPacket
             }
@@ -106,10 +118,6 @@ abstract class TcpSession(
             }
         }
         return null
-    }
-
-    fun reestablishConnection() {
-        TODO()
     }
 
     open fun mtu(): UShort =
