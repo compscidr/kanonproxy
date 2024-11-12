@@ -53,6 +53,8 @@ class TcpStateMachine(
     val swapSourceDestination: Boolean = false, // only time we want this is if we're a tcpClient
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private var delayedAckJob: Job? = null
+    private var latestAck: Packet? = null
 
     val tcbMutex = Mutex()
     var transmissionControlBlock: TransmissionControlBlock? = null
@@ -761,8 +763,7 @@ class TcpStateMachine(
                                     session.isPsh.set(true)
                                     return@runBlocking listOf(ack)
                                 } else {
-                                    val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
-                                    session.lastestACKs.add(retransmittablePacket)
+                                    setupLatestAckJob(ack)
                                 }
                             }
 
@@ -1017,8 +1018,7 @@ class TcpStateMachine(
                             )
                             return@runBlocking listOf(ack)
                         } else {
-                            val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
-                            session.lastestACKs.add(retransmittablePacket)
+                            setupLatestAckJob(ack)
                         }
                     }
 
@@ -1265,8 +1265,7 @@ class TcpStateMachine(
                             session.isPsh.set(true)
                             return@runBlocking listOf(ack)
                         } else {
-                            val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
-                            session.lastestACKs.add(retransmittablePacket)
+                            setupLatestAckJob(ack)
                         }
                     }
 
@@ -1500,8 +1499,7 @@ class TcpStateMachine(
                             ackNumber = transmissionControlBlock!!.rcv_nxt,
                             transmissionControlBlock = transmissionControlBlock,
                         )
-                    val retransmittablePacket = RetransmittablePacket(ack, timeout = System.currentTimeMillis())
-                    session.lastestACKs.add(retransmittablePacket)
+                    setupLatestAckJob(ack)
                 }
 
                 // 8th: check the FIN bit
@@ -2669,22 +2667,22 @@ class TcpStateMachine(
                         outgoingBuffer.compact()
                         // logger.debug("ENC after compact position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                     }
-                    val latestAck =
-                        if (session.lastestACKs.isNotEmpty()) {
-                            (
-                                session.lastestACKs
-                                    .removeAt(0)
-                                    .packet.nextHeaders as TcpHeader
-                            ).acknowledgementNumber
+
+                    val latestAckNumber =
+                        if (latestAck != null) {
+                            (latestAck!!.nextHeaders as TcpHeader).acknowledgementNumber
                         } else {
                             transmissionControlBlock!!.rcv_nxt
                         }
+                    delayedAckJob?.cancel()
+                    delayedAckJob = null
+                    latestAck = null
                     val packet =
                         TcpHeaderFactory.createAckPacket(
                             ipHeader = ipHeader,
                             tcpHeader = tcpHeader,
                             seqNumber = session.tcpStateMachine.transmissionControlBlock!!.snd_nxt,
-                            ackNumber = latestAck,
+                            ackNumber = latestAckNumber,
                             isPsh = isPush,
                             payload = ByteBuffer.wrap(payloadCopy),
                             transmissionControlBlock = transmissionControlBlock,
@@ -2821,29 +2819,18 @@ class TcpStateMachine(
         return retransmits
     }
 
-    /**
-     * See if we need to send an ACK that has been waiting for reverse traffic. Will remove all
-     * acks which have been waiting longer than 500ms, and return them so they may be transmitted.
-     */
-    fun checkForReverseAcks(session: TcpSession): List<Packet> {
-        var mostRecentAck: Packet? = null
-        val now = System.currentTimeMillis()
-        for (ack in session.lastestACKs) {
-            if (now - ack.timeout > 500) {
-                session.lastestACKs.remove(ack)
-                mostRecentAck = ack.packet
-            } else {
-                // once we reach an unexpired one, the following ones won't be either so we
-                // can stop searching.
-                break
-            }
-        }
-
-        // only return the last one we added since it's the most recent
-        return if (mostRecentAck != null) {
-            listOf(mostRecentAck)
-        } else {
-            emptyList()
+    private fun setupLatestAckJob(ack: Packet) {
+        latestAck = ack
+        if (delayedAckJob == null) {
+            delayedAckJob =
+                CoroutineScope(Dispatchers.IO).launch {
+                    delay(500)
+                    if (latestAck != null) {
+                        session.returnQueue.add(latestAck!!)
+                        latestAck = null
+                    }
+                    delayedAckJob = null
+                }
         }
     }
 }

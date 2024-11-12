@@ -12,7 +12,6 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -50,7 +49,6 @@ abstract class TcpSession(
         }
 
     abstract val tcpStateMachine: TcpStateMachine
-    var lastestACKs = CopyOnWriteArrayList<RetransmittablePacket>()
 
     override fun handlePayloadFromInternet(payload: ByteArray) {
         val buffer = ByteBuffer.wrap(payload)
