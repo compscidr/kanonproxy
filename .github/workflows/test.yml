@@ -34,8 +34,8 @@ jobs:
       - name: Tar Reports
         if: always()
         run: |
-          mkdir -p kanonproxy/build/reports/ &&
-          tar -czvf kanonproxy-reports.tar.gz -C kanonproxy/build reports
+          mkdir -p kanonproxy/core/build/reports/ &&
+          tar -czvf kanonproxy-reports.tar.gz -C kanonproxy/core/build reports
       - name: Upload Reports
         uses: actions/upload-artifact@v4.4.3
         if: always()
@@ -48,7 +48,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: libunittests
-          files: ./kanonproxy/build/reports/jacoco/test/jacocoTestReport.xml
+          files: ./kanonproxy/core/build/reports/jacoco/test/jacocoTestReport.xml
       - name: End to End Tests
         run: |
-          bash scripts/tuntap.sh $USER
+          bash client/scripts/tuntap.sh $USER
