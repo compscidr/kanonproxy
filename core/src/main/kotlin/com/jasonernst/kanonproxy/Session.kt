@@ -95,7 +95,7 @@ abstract class Session(
     fun getKey(): String = getKey(getSourceAddress(), getSourcePort(), getDestinationAddress(), getDestinationPort(), getProtocol())
 
     override fun toString(): String =
-        "Session(sourceAddress='${getSourceAddress()}', sourcePort=${getSourcePort()}, destinationAddress='${getDestinationAddress()}', destinationPort=${getDestinationPort()}, protocol=${getProtocol()})"
+        "Session(clientAddress='$clientAddress' sourceAddress='${getSourceAddress()}', sourcePort=${getSourcePort()}, destinationAddress='${getDestinationAddress()}', destinationPort=${getDestinationPort()}, protocol=${getProtocol()})"
 
     open fun handleReturnTrafficLoop(maxRead: Int): Int {
         val realLimit = min(maxRead, readBuffer.capacity())

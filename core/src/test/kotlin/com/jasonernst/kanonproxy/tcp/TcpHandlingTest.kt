@@ -215,6 +215,7 @@ class TcpHandlingTest {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val sourcePort: UShort = 12345u
         val destinationAddress = InetAddress.getByName("xkcd.com") as Inet4Address
+        logger.debug("Destination address: ${destinationAddress.hostAddress}")
         val destinationPort: UShort = 80u
 
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
@@ -225,6 +226,8 @@ class TcpHandlingTest {
         tcpClient.recv(recvBuffer)
 
         tcpClient.closeClient()
+        logger.debug("Starting session 2")
+        kAnonProxy.flushQueue(tcpClient.clientAddress)
 
         val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient2.connect()
@@ -232,6 +235,8 @@ class TcpHandlingTest {
 
         tcpClient2.recv(recvBuffer)
         tcpClient2.closeClient()
+
+        kAnonProxy.flushQueue(tcpClient.clientAddress)
 
         val tcpClient3 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient3.connect()

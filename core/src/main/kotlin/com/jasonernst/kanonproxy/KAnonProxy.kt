@@ -178,10 +178,12 @@ class KAnonProxy(
     ) {
         val sessionTableBySessionKey =
             sessionTablesBySessionKey.getOrPut(clientAddress) {
+                logger.debug("New session table for client: {}", clientAddress)
                 ConcurrentHashMap()
             }
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
+                logger.debug("New outgoing queue for client: {}", clientAddress)
                 LinkedBlockingDeque()
             }
         var isNewSession = false
@@ -312,6 +314,7 @@ class KAnonProxy(
     fun takeResponse(clientAddress: InetSocketAddress): Packet {
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
+                logger.debug("No outgoing queue for client when taking response: {}", clientAddress)
                 LinkedBlockingDeque()
             }
         if (!isRunning.get()) {
@@ -367,6 +370,7 @@ class KAnonProxy(
     fun disconnectSession(clientAddress: InetSocketAddress) {
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
+                logger.warn("No outgoing queue for client when disconnecting session: {}", clientAddress)
                 LinkedBlockingDeque()
             }
         outgoingQueue.put(SentinelPacket)

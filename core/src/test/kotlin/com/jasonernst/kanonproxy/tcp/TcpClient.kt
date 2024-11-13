@@ -17,7 +17,8 @@ import com.jasonernst.packetdumper.stringdumper.StringPacketDumper
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
@@ -32,6 +33,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * A "TCP client" that has its own state machine, processes packets, and generates new packets to send.
@@ -72,28 +74,29 @@ class TcpClient(
 
     private val outgoingPackets = LinkedBlockingDeque<Packet>()
 
-    private var isRunning = false
-    private val readJob: Job
-    private val writeJob: Job
+    private val isRunning = AtomicBoolean(false)
+
+    private val readJob = SupervisorJob()
+    private val readJobScope = CoroutineScope(Dispatchers.IO + readJob)
+    private val writeJob = SupervisorJob()
+    private val writeJobScope = CoroutineScope(Dispatchers.IO + writeJob)
 
     init {
-        isRunning = true
+        isRunning.set(true)
 
-        readJob =
-            CoroutineScope(Dispatchers.IO).launch {
-                Thread.currentThread().name = "TcpClient writer $clientId"
-                writerThread()
-            }
+        writeJobScope.launch {
+            Thread.currentThread().name = "TcpClient writer $clientId"
+            writerThread()
+        }
 
-        writeJob =
-            CoroutineScope(Dispatchers.IO).launch {
-                Thread.currentThread().name = "TcpClient reader $clientId"
-                readerThread()
-            }
+        readJobScope.launch {
+            Thread.currentThread().name = "TcpClient reader $clientId"
+            readerThread()
+        }
     }
 
-    fun writerThread() {
-        while (isRunning) {
+    private fun writerThread() {
+        while (isRunning.get()) {
             val packet = outgoingPackets.take()
             if (packet == SentinelPacket) {
                 logger.warn("Got sentinel packet, stopping writer")
@@ -108,8 +111,8 @@ class TcpClient(
         }
     }
 
-    fun readerThread() {
-        while (isRunning) {
+    private fun readerThread() {
+        while (isRunning.get()) {
             val packet = kAnonProxy.takeResponse(clientAddress)
             if (packet == SentinelPacket) {
                 logger.warn("Got sentinel packet, stopping reader")
@@ -174,18 +177,19 @@ class TcpClient(
         initialIpHeader = synPacket.ipHeader
         initialTransportHeader = synPacket.nextHeaders as TcpHeader
         initialPayload = synPacket.payload
-        logger.debug("$clientId Sending SYN to proxy: ${synPacket.nextHeaders}")
+        logger.debug("{} Sending SYN to proxy: {}", clientId, synPacket.nextHeaders)
         outgoingPackets.add(synPacket)
 
         // this will block until we reach the established state or closed state, or until a timeout occurs
         // if a timeout occurs, an exception will be thrown
         runBlocking {
+            logger.debug("{} Waiting for connection to establish", clientId)
             withTimeout(timeOutMs) {
                 tcpStateMachine.tcpState
                     .takeWhile {
                         it != TcpState.ESTABLISHED && it != TcpState.CLOSED
                     }.collect {
-                        logger.debug("$clientId State: $it")
+                        logger.debug("{} State: {}", clientId, it)
                     }
             }
         }
@@ -287,15 +291,15 @@ class TcpClient(
         // give a little extra time for the ACK for the FIN to from the other side to be enqueued and sent out
         Thread.sleep(100)
         runBlocking {
-            isRunning = false
+            isRunning.set(false)
             outgoingPackets.add(SentinelPacket)
-            logger.debug("Waiting for readjob to finish")
-            readJob.join()
             if (!waitForTimeWait) {
                 kAnonProxy.disconnectSession(clientAddress)
             }
+            logger.debug("Waiting for readjob to finish")
+            readJob.cancelAndJoin()
             logger.debug("Waiting for writejob to finish")
-            writeJob.join()
+            writeJob.cancelAndJoin()
             logger.debug("Jobs finished")
         }
         if (waitForTimeWait) {
