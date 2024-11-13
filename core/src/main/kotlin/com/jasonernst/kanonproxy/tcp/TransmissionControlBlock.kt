@@ -55,7 +55,6 @@ data class TransmissionControlBlock(
     //         set RTO <- 1 second, though the "backing off" on repeated
     //         retransmission discussed in (5.5) still applies.
     var rto: Double = 1.0, // retransmission timeout
-    var rto_expiry: Long = 0L, // time when the RTO expires (0 means timer is not running)
     // https://www.rfc-editor.org/rfc/rfc2581
     // congestion window
     var iw: Int = 0,

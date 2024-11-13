@@ -9,7 +9,6 @@ import com.jasonernst.icmp.common.v4.IcmpV4EchoPacket
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.icmp.common.v6.IcmpV6EchoPacket
-import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
 import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
@@ -342,10 +341,6 @@ class KAnonProxy(
                             continue
                         }
                     }
-                    if (session is TcpSession) {
-                        processRetransmits(session)
-                        processReverseAcks(session)
-                    }
                 }
             }
 
@@ -362,43 +357,6 @@ class KAnonProxy(
             }
         }
         logger.warn("Session maintenance thread is (stop)ped")
-    }
-
-    private suspend fun processRetransmits(session: TcpSession) {
-        // TODO: implement timer based retransmits where a job fires at the timeout
-        /*
-        session.tcpStateMachine.tcbMutex.withLock {
-            if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
-                logger.error("Trying to process retransmit for a CLOSED session")
-                sessionTableBySessionKey.remove(session.getKey())
-                return
-            }
-            val retransmits = session.tcpStateMachine.processTimeouts(session)
-            for (retransmit in retransmits) {
-                logger.debug("Queuing retransmitting packet: $retransmit")
-                outgoingQueue.put(retransmit)
-            }
-        }*/
-    }
-
-    private suspend fun processReverseAcks(session: TcpSession) {
-        // TODO: implement reverse ACK as a timer that fires and runs instead
-        /*
-        session.tcpStateMachine.tcbMutex.withLock {
-            if (session.tcpStateMachine.tcpState.value == TcpState.CLOSED) {
-                logger.error("Trying to process reverse ACKs for a CLOSED session")
-                sessionTableBySessionKey.remove(session.getKey())
-                return
-            }
-            val reverseAcks = session.tcpStateMachine.checkForReverseAcks(session)
-            for (reverseAck in reverseAcks) {
-                logger.warn(
-                    "Waited over 500 ms for reverse traffic, enqueuing ACK " +
-                        "${(reverseAck.nextHeaders as TcpHeader).acknowledgementNumber}",
-                )
-                outgoingQueue.put(reverseAck)
-            }
-        }*/
     }
 
     fun haveSessionForClient(

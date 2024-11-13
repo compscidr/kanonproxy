@@ -56,22 +56,23 @@ class TcpStateMachine(
     private var delayedAckJob: Job? = null
     private var latestAck: Packet? = null
 
-    val tcbMutex = Mutex()
+    private val tcbMutex = Mutex()
     var transmissionControlBlock: TransmissionControlBlock? = null
 
     // the MSS value which will be used in the synchronized state (set based on the handshake to
     // be the minimum effective MSS of the two endpoints)
-    var mss: UShort = 0u
+    private var mss: UShort = 0u
 
     // this is data waiting to be encapsulated and sent out. The head of the buffer is equivalent to snd_una. The end
     // of the buffer is equivalent to send_nxt.
-    val outgoingMutex = Mutex()
+    private val outgoingMutex = Mutex()
 
     private val retransmitQueue = ConcurrentLinkedQueue<Packet>()
     private val outgoingBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
 
-    var isClosed = false
-    var timeWaitJob: Job? = null
+    private var isClosed = false
+    private var timeWaitJob: Job? = null
+    private var rtoJob: Job? = null
 
     companion object {
         const val ALPHA = 1.0 / 8 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
@@ -402,15 +403,10 @@ class TcpStateMachine(
                     )
                     transmissionControlBlock!!.snd_nxt = transmissionControlBlock!!.iss + 1u
                     transmissionControlBlock!!.snd_una.value = transmissionControlBlock!!.iss
-                    transmissionControlBlock!!.rto_expiry =
-                        System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000).toLong()
+                    startRtoTimer()
                     logger.debug("Transition to SYN_RECEIVED state")
                     tcpState.value = TcpState.SYN_RECEIVED
                     transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-                    if (transmissionControlBlock!!.rto_expiry == 0L) {
-                        transmissionControlBlock!!.rto_expiry =
-                            System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000L).toLong()
-                    }
                     logger.debug("TCB: $transmissionControlBlock")
                     return@runBlocking listOf(response)
                 }
@@ -932,11 +928,10 @@ class TcpStateMachine(
                             logger.debug("Received ACK in ESTABLISHED state, updating snd_una: $tcpHeader")
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                             transmissionControlBlock!!.snd_una.value = tcpHeader.acknowledgementNumber
-                            removeAckedPacketsFromRetransmit()
                             updateTimestamp(tcpHeader)
+                            removeAckedPacketsFromRetransmit()
                             updateCongestionState()
                             updateSendWindow(tcpHeader)
-                            updateRTO()
                         } else {
                             logger.debug("Received unacceptable ACK in ESTABLISHED state")
                             if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una.value) {
@@ -1175,11 +1170,10 @@ class TcpStateMachine(
                         if (isAckAcceptable(tcpHeader)) {
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                             transmissionControlBlock!!.snd_una.value = tcpHeader.acknowledgementNumber
-                            removeAckedPacketsFromRetransmit()
                             updateTimestamp(tcpHeader)
+                            removeAckedPacketsFromRetransmit()
                             updateCongestionState()
                             updateSendWindow(tcpHeader)
-                            updateRTO()
                         } else {
                             if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una.value) {
                                 // ignore duplicate ACKs
@@ -1423,12 +1417,11 @@ class TcpStateMachine(
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
                         transmissionControlBlock!!.snd_una.value = tcpHeader.acknowledgementNumber
-                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
+                        removeAckedPacketsFromRetransmit()
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
                         updateSendWindow(tcpHeader)
-                        updateRTO()
                     } else {
                         if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una.value) {
                             // ignore duplicate ACKs
@@ -1639,12 +1632,11 @@ class TcpStateMachine(
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
                         transmissionControlBlock!!.snd_una.value = tcpHeader.acknowledgementNumber
-                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
+                        removeAckedPacketsFromRetransmit()
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
                         updateSendWindow(tcpHeader)
-                        updateRTO()
                     } else {
                         if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una.value) {
                             // ignore duplicate ACKs
@@ -1836,12 +1828,11 @@ class TcpStateMachine(
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
                         transmissionControlBlock!!.snd_una.value = tcpHeader.acknowledgementNumber
-                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
+                        removeAckedPacketsFromRetransmit()
                         transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                         updateCongestionState()
                         updateSendWindow(tcpHeader)
-                        updateRTO()
                     } else {
                         if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una.value) {
                             // ignore duplicate ACKs
@@ -2204,11 +2195,10 @@ class TcpStateMachine(
                 if (tcpHeader.isAck()) {
                     if (isAckAcceptable(tcpHeader)) {
                         transmissionControlBlock!!.snd_una.value = tcpHeader.acknowledgementNumber
-                        removeAckedPacketsFromRetransmit()
                         updateTimestamp(tcpHeader)
+                        removeAckedPacketsFromRetransmit()
                         updateCongestionState()
                         updateSendWindow(tcpHeader)
-                        updateRTO()
 //                        session.lastTransportHeader = tcpHeader
 //                        session.lastIpHeader = ipHeader
                     } else {
@@ -2292,8 +2282,10 @@ class TcpStateMachine(
         // (5.3) When an ACK is received that acknowledges new data, restart the
         //         retransmission timer so that it will expire after RTO seconds
         //         (for the current value of RTO).
-        transmissionControlBlock!!.rto_expiry =
-            System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000L).toLong()
+        rtoJob?.cancel()
+        rtoJob = null
+        startRtoTimer()
+
         while (!retransmitQueue.isEmpty()) {
             // may be null if the session is shutting down
             val packet = retransmitQueue.peek() ?: break
@@ -2325,18 +2317,8 @@ class TcpStateMachine(
         // (5.2) When all outstanding data has been acknowledged, turn off the
         //         retransmission timer.
         if (retransmitQueue.isEmpty()) {
-            transmissionControlBlock!!.rto_expiry = 0L
-        }
-    }
-
-    private fun updateRTO() {
-        // https://www.rfc-editor.org/rfc/rfc6298.html 5.3:
-        //  (5.3) When an ACK is received that acknowledges new data, restart the
-        //         retransmission timer so that it will expire after RTO seconds
-        //         (for the current value of RTO).
-        if (transmissionControlBlock!!.rto_expiry == 0L) {
-            transmissionControlBlock!!.rto_expiry =
-                System.currentTimeMillis() + (transmissionControlBlock!!.rto * 1000).toLong()
+            rtoJob?.cancel()
+            rtoJob = null
         }
     }
 
@@ -2708,115 +2690,89 @@ class TcpStateMachine(
                     packets.add(packet)
                 } while (outgoingBuffer.hasRemaining())
             }
+            if (packets.isNotEmpty()) {
+                if (rtoJob == null) {
+                    startRtoTimer()
+                }
+            }
             return@runBlocking packets
         }
     }
 
     /**
-     * This will check for any packets that have timed out and need to be retransmitted.
+     * When the retransmission timer expires, do the following:
+     *
+     *        (5.4) Retransmit the earliest segment that has not been acknowledged
+     *              by the TCP receiver.
+     *
+     *        (5.5) The host MUST set RTO <- RTO * 2 ("back off the timer").  The
+     *              maximum value discussed in (2.5) above may be used to provide
+     *              an upper bound to this doubling operation.
+     *
+     *        (5.6) Start the retransmission timer, such that it expires after RTO
+     *              seconds (for the value of RTO after the doubling operation
+     *              outlined in 5.5).
+     *
+     *        (5.7) If the timer expires awaiting the ACK of a SYN segment and the
+     *              TCP implementation is using an RTO less than 3 seconds, the RTO
+     *              MUST be re-initialized to 3 seconds when data transmission
+     *              begins (i.e., after the three-way handshake completes).
+     *
+     *              This represents a change from the previous version of this
+     *              document [PA00] and is discussed in Appendix A.
+     *
+     *              Note that after retransmitting, once a new RTT measurement is
+     *        obtained (which can only happen when new data has been sent and
+     *        acknowledged), the computations outlined in Section 2 are performed,
+     *        including the computation of RTO, which may result in "collapsing"
+     *        RTO back down after it has been subject to exponential back off (rule
+     *        5.5).
+     *
+     *        Note that a TCP implementation MAY clear SRTT and RTTVAR after
+     *        backing off the timer multiple times as it is likely that the current
+     *        SRTT and RTTVAR are bogus in this situation.  Once SRTT and RTTVAR
+     *        are cleared, they should be initialized with the next RTT sample
+     *        taken per (2.2) rather than using (2.3).
      */
-    fun processTimeouts(session: TcpSession): List<Packet> {
-        // When the retransmission timer expires, do the following:
-        //
-        //   (5.4) Retransmit the earliest segment that has not been acknowledged
-        //         by the TCP receiver.
-        //
-        //   (5.5) The host MUST set RTO <- RTO * 2 ("back off the timer").  The
-        //         maximum value discussed in (2.5) above may be used to provide
-        //         an upper bound to this doubling operation.
-        //
-        //   (5.6) Start the retransmission timer, such that it expires after RTO
-        //         seconds (for the value of RTO after the doubling operation
-        //         outlined in 5.5).
-        //
-        //   (5.7) If the timer expires awaiting the ACK of a SYN segment and the
-        //         TCP implementation is using an RTO less than 3 seconds, the RTO
-        //         MUST be re-initialized to 3 seconds when data transmission
-        //         begins (i.e., after the three-way handshake completes).
-        //
-        //         This represents a change from the previous version of this
-        //         document [PA00] and is discussed in Appendix A.
-        //
-        //         Note that after retransmitting, once a new RTT measurement is
-        //   obtained (which can only happen when new data has been sent and
-        //   acknowledged), the computations outlined in Section 2 are performed,
-        //   including the computation of RTO, which may result in "collapsing"
-        //   RTO back down after it has been subject to exponential back off (rule
-        //   5.5).
-        //
-        //   Note that a TCP implementation MAY clear SRTT and RTTVAR after
-        //   backing off the timer multiple times as it is likely that the current
-        //   SRTT and RTTVAR are bogus in this situation.  Once SRTT and RTTVAR
-        //   are cleared, they should be initialized with the next RTT sample
-        //   taken per (2.2) rather than using (2.3).
-        val retransmits = ArrayList<Packet>()
-        val currentTime = System.currentTimeMillis()
-        val rtoExpiry = session.tcpStateMachine.transmissionControlBlock?.rto_expiry ?: 0L
-        if (rtoExpiry == 0L) {
-            logger.error("RTO EXPIRY UNSET, can't check for packet timeouts for session: $session")
-            return retransmits
+    private fun startRtoTimer() {
+        if (rtoJob == null) {
+            rtoJob =
+                CoroutineScope(Dispatchers.IO).launch {
+                    val rtoExpiry = (transmissionControlBlock!!.rto * 1000L).toLong()
+                    delay(rtoExpiry)
+                    if (retransmitQueue.isNotEmpty()) {
+                        // we only peek because we want to keep the packet in the queue until we get a positive ack so
+                        // it doesn't get lost. It will be removed when we receive a successful ack
+                        val retransmitPacket = retransmitQueue.peek()
+                        session.returnQueue.add(retransmitPacket)
+                        // When a TCP sender detects segment loss using the retransmission
+                        //   timer, the value of ssthresh MUST be set to no more than the value
+                        //   given in equation 3:
+                        //
+                        //      ssthresh = max (FlightSize / 2, 2*SMSS)            (3)
+                        //
+                        //   As discussed above, FlightSize is the amount of outstanding data in
+                        //   the network.
+                        //
+                        //   Implementation Note: an easy mistake to make is to simply use cwnd,
+                        //   rather than FlightSize, which in some implementations may
+                        //   incidentally increase well beyond rwnd.
+                        //
+                        //   Furthermore, upon a timeout cwnd MUST be set to no more than the loss
+                        //   window, LW, which equals 1 full-sized segment (regardless of the
+                        //   value of IW).  Therefore, after retransmitting the dropped segment
+                        //   the TCP sender uses the slow start algorithm to increase the window
+                        //   from 1 full-sized segment to the new value of ssthresh, at which
+                        //   point congestion avoidance again takes over.
+                        transmissionControlBlock!!.ssthresh =
+                            max(transmissionControlBlock!!.outstandingBytes().toInt() / 2, 2 * mss.toInt())
+
+                        // set cwnd to 1 full-sized segment
+                        transmissionControlBlock!!.cwnd = session.tcpStateMachine.mss.toInt()
+                    }
+                    rtoJob = null
+                }
         }
-
-        if (currentTime > rtoExpiry) {
-            if (session.tcpStateMachine.retransmitQueue.isNotEmpty()) {
-                logger.error("RTO EXPIRY!!!!!!!!!")
-                session.tcpStateMachine.transmissionControlBlock!!.rto *= 2 // exponential backoff, double the RTO
-                session.tcpStateMachine.transmissionControlBlock!!.rto_expiry =
-                    currentTime +
-                    (session.tcpStateMachine.transmissionControlBlock!!.rto * 1000L).toLong()
-
-                // TODO: confirm that it is correct behavior to only retransmit the first packet
-                //   and not all packets in the outstanding queue
-
-                // don't remove from the queue, just get the first one, we only remove when
-                // we receive a positive ack
-                val retransmitPacket =
-                    session.tcpStateMachine.retransmitQueue.peek()
-                logger.warn(
-                    "RTO expiry for session $session, setting next expiry to " +
-                        "${session.tcpStateMachine.transmissionControlBlock!!.rto_expiry} " +
-                        "retransmitting packet ${retransmitPacket.nextHeaders}",
-                )
-
-                // When a TCP sender detects segment loss using the retransmission
-                //   timer, the value of ssthresh MUST be set to no more than the value
-                //   given in equation 3:
-                //
-                //      ssthresh = max (FlightSize / 2, 2*SMSS)            (3)
-                //
-                //   As discussed above, FlightSize is the amount of outstanding data in
-                //   the network.
-                //
-                //   Implementation Note: an easy mistake to make is to simply use cwnd,
-                //   rather than FlightSize, which in some implementations may
-                //   incidentally increase well beyond rwnd.
-                //
-                //   Furthermore, upon a timeout cwnd MUST be set to no more than the loss
-                //   window, LW, which equals 1 full-sized segment (regardless of the
-                //   value of IW).  Therefore, after retransmitting the dropped segment
-                //   the TCP sender uses the slow start algorithm to increase the window
-                //   from 1 full-sized segment to the new value of ssthresh, at which
-                //   point congestion avoidance again takes over.
-                session.tcpStateMachine.transmissionControlBlock!!.ssthresh =
-                    max(
-                        session.tcpStateMachine.transmissionControlBlock!!
-                            .outstandingBytes()
-                            .toInt() / 2,
-                        2 * session.tcpStateMachine.mss.toInt(),
-                    )
-
-                // set cwnd to 1 full-sized segment
-                session.tcpStateMachine.transmissionControlBlock!!.cwnd = session.tcpStateMachine.mss.toInt()
-
-                retransmits.add(retransmitPacket)
-            } else {
-                // logger.debug("RTO expired but no packets to retransmit")
-            }
-        } else {
-            // logger.debug("RTO not expired yet, currentTime: $currentTime, rtoExpiry: $rtoExpiry")
-        }
-
-        return retransmits
     }
 
     private fun setupLatestAckJob(ack: Packet) {
