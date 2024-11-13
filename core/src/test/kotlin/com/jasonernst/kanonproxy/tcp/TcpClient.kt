@@ -256,7 +256,10 @@ class TcpClient(
     /**
      * Finishes any outstanding sends / recvs and then closes the connection cleanly with a FIN
      */
-    fun closeClient(waitForTimeWait: Boolean = false, timeOutMs: Long = 2000) {
+    fun closeClient(
+        waitForTimeWait: Boolean = false,
+        timeOutMs: Long = 2000,
+    ) {
         // send the FIN
         val finPacket = super.teardown(false)
         if (finPacket != null) {
