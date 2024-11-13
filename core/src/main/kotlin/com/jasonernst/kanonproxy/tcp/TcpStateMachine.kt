@@ -1290,6 +1290,8 @@ class TcpStateMachine(
                                         }
                                     }
                                 }
+                            rtoJob?.cancel()
+                            rtoJob = null
                         } else {
                             logger.debug("Received FIN, but our's hasn't been ACK'd transitioning to CLOSING state: $tcpHeader")
                             tcpState.value = TcpState.CLOSING
@@ -2741,6 +2743,7 @@ class TcpStateMachine(
                     val rtoExpiry = (transmissionControlBlock!!.rto * 1000L).toLong()
                     delay(rtoExpiry)
                     if (retransmitQueue.isNotEmpty()) {
+                        logger.debug("RTO expired, retransmitting")
                         // we only peek because we want to keep the packet in the queue until we get a positive ack so
                         // it doesn't get lost. It will be removed when we receive a successful ack
                         val retransmitPacket = retransmitQueue.peek()
@@ -2771,6 +2774,7 @@ class TcpStateMachine(
                         transmissionControlBlock!!.cwnd = session.tcpStateMachine.mss.toInt()
                     }
                     rtoJob = null
+                    startRtoTimer()
                 }
         }
     }
