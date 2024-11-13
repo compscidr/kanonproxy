@@ -237,6 +237,7 @@ class TcpHandlingTest {
         tcpClient2.closeClient()
 
         kAnonProxy.flushQueue(tcpClient.clientAddress)
+        logger.debug("Starting session 3")
 
         val tcpClient3 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient3.connect()
