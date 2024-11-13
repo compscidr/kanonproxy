@@ -256,7 +256,7 @@ class TcpClient(
     /**
      * Finishes any outstanding sends / recvs and then closes the connection cleanly with a FIN
      */
-    fun closeClient(waitForTimeWait: Boolean = false) {
+    fun closeClient(waitForTimeWait: Boolean = false, timeOutMs: Long = 2000) {
         // send the FIN
         val finPacket = super.teardown(false)
         if (finPacket != null) {
@@ -272,7 +272,7 @@ class TcpClient(
                     // it's supposed to take 2MSL to close, so we'll wait for that plus a bit of wiggle room
                     ((2 * TcpStateMachine.MSL * 1000) + 1000).toLong()
                 } else {
-                    1000.toLong()
+                    timeOutMs
                 }
             withTimeout(timeout) {
                 val flow =
