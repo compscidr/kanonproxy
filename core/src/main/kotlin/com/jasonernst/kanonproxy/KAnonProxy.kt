@@ -90,6 +90,8 @@ class KAnonProxy(
             queue.clear()
         }
         sessionTablesBySessionKey.clear()
+        outgoingQueues.clear()
+        incomingQueue.clear()
         logger.debug("KAnonProxy stopped")
     }
 
