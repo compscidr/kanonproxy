@@ -189,7 +189,7 @@ class TcpClient(
                     .takeWhile {
                         it != TcpState.ESTABLISHED && it != TcpState.CLOSED
                     }.collect {
-                        logger.debug("{} State: {}", clientId, it)
+                        logger.debug("Waiting for CONNECT {} State: {}", clientId, it)
                     }
             }
         }
@@ -284,7 +284,7 @@ class TcpClient(
                     }
 
                 flow.collect {
-                    logger.debug("State: $it")
+                    logger.debug("Waiting for CLOSED: {} State: {}", clientId, it)
                 }
             }
         }
