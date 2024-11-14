@@ -45,8 +45,8 @@ class TcpClient(
     private val destinationAddress: InetAddress,
     private val sourcePort: UShort,
     private val destinationPort: UShort,
-    val kAnonProxy: KAnonProxy,
-    val packetDumper: AbstractPacketDumper = DummyPacketDumper,
+    private val kAnonProxy: KAnonProxy,
+    private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
 ) : TcpSession(
         null,
         null,
@@ -71,9 +71,6 @@ class TcpClient(
     // this is where the state machine will write into for us to receive it here
     override val channel: ByteChannel = BidirectionalByteChannel()
     private val stringDumper = StringPacketDumper()
-
-    private val outgoingPackets = LinkedBlockingDeque<Packet>()
-
     private val isRunning = AtomicBoolean(false)
 
     private val readJob = SupervisorJob()
@@ -97,7 +94,7 @@ class TcpClient(
 
     private fun writerThread() {
         while (isRunning.get()) {
-            val packet = outgoingPackets.take()
+            val packet = returnQueue.take()
             if (packet == SentinelPacket) {
                 logger.warn("Got sentinel packet, stopping writer")
                 break
@@ -109,6 +106,7 @@ class TcpClient(
             )
             kAnonProxy.handlePackets(listOf(packet), clientAddress)
         }
+        logger.debug("Writer thread finished")
     }
 
     private fun readerThread() {
@@ -116,6 +114,7 @@ class TcpClient(
             val packet = kAnonProxy.takeResponse(clientAddress)
             if (packet == SentinelPacket) {
                 logger.warn("Got sentinel packet, stopping reader")
+                tcpStateMachine.tcpState.value = TcpState.CLOSED
                 break
             }
             if (packet.ipHeader == null || packet.nextHeaders == null || packet.payload == null) {
@@ -136,7 +135,7 @@ class TcpClient(
                         packet.payload!!,
                     )
                 for (response in responses) {
-                    outgoingPackets.add(response)
+                    returnQueue.add(response)
                 }
             } else if (packet.nextHeaders is IcmpNextHeaderWrapper) {
                 val icmpHeader = (packet.nextHeaders as IcmpNextHeaderWrapper).icmpHeader
@@ -144,6 +143,8 @@ class TcpClient(
                     logger.debug("Got Icmp unreachable, closing")
                     closeClient()
                 }
+            } else {
+                logger.warn("Got unexpected packet type: {}", packet.nextHeaders)
             }
         }
     }
@@ -178,23 +179,29 @@ class TcpClient(
         initialTransportHeader = synPacket.nextHeaders as TcpHeader
         initialPayload = synPacket.payload
         logger.debug("{} Sending SYN to proxy: {}", clientId, synPacket.nextHeaders)
-        outgoingPackets.add(synPacket)
+        tcpStateMachine.enqueueRetransmit(synPacket)
+        returnQueue.add(synPacket)
 
         // this will block until we reach the established state or closed state, or until a timeout occurs
         // if a timeout occurs, an exception will be thrown
         runBlocking {
-            logger.debug("{} Waiting for connection to establish", clientId)
-            withTimeout(timeOutMs) {
-                tcpStateMachine.tcpState
-                    .takeWhile {
-                        it != TcpState.ESTABLISHED && it != TcpState.CLOSED
-                    }.collect {
-                        logger.debug("Waiting for CONNECT {} State: {}", clientId, it)
-                    }
+            try {
+                logger.debug("{} Waiting for connection to establish", clientId)
+                withTimeout(timeOutMs) {
+                    tcpStateMachine.tcpState
+                        .takeWhile {
+                            it != TcpState.ESTABLISHED && it != TcpState.CLOSED
+                        }.collect {
+                            logger.debug("Waiting for CONNECT {} State: {}", clientId, it)
+                        }
+                }
+            } catch (e: Exception) {
+                logger.error("Failed to connect: {}, last state: {}", e.message, tcpStateMachine.tcpState.value)
+                throw e
             }
         }
         if (tcpStateMachine.tcpState.value != TcpState.ESTABLISHED) {
-            throw SocketException("$clientId Failed to connect")
+            throw SocketException("$clientId Failed to connect: state: ${tcpStateMachine.tcpState.value}")
         }
     }
 
@@ -212,7 +219,7 @@ class TcpClient(
         while (buffer.hasRemaining()) {
             tcpStateMachine.enqueueOutgoingData(buffer)
             val packets = tcpStateMachine.encapsulateOutgoingData(true)
-            outgoingPackets.addAll(packets)
+            returnQueue.addAll(packets)
         }
 
         runBlocking {
@@ -263,39 +270,45 @@ class TcpClient(
         // send the FIN
         val finPacket = super.teardown(false)
         if (finPacket != null) {
-            logger.debug("Sending FIN to proxy: ${finPacket.nextHeaders}")
-            outgoingPackets.add(finPacket)
+            logger.debug("Sending FIN to proxy: {}", finPacket.nextHeaders)
+            tcpStateMachine.enqueueRetransmit(finPacket)
+            returnQueue.add(finPacket)
         }
 
         // this will block until we reach the established state or closed state, or until a timeout occurs
         // if a timeout occurs, an exception will be thrown
         runBlocking {
-            val timeout =
-                if (waitForTimeWait) {
-                    // it's supposed to take 2MSL to close, so we'll wait for that plus a bit of wiggle room
-                    ((2 * TcpStateMachine.MSL * 1000) + 1000).toLong()
-                } else {
-                    timeOutMs
-                }
-            withTimeout(timeout) {
-                val flow =
+            try {
+                val timeout =
                     if (waitForTimeWait) {
-                        tcpStateMachine.tcpState.takeWhile { it != TcpState.CLOSED }
+                        // it's supposed to take 2MSL to close, so we'll wait for that plus a bit of wiggle room
+                        ((2 * TcpStateMachine.MSL * 1000) + 1000).toLong()
                     } else {
-                        // if we aren't waiting for the TIME_WAIT timer, we can consider it closed on TIME_WAIT
-                        tcpStateMachine.tcpState.takeWhile { it != TcpState.CLOSED && it != TcpState.TIME_WAIT }
+                        timeOutMs
                     }
+                withTimeout(timeout) {
+                    val flow =
+                        if (waitForTimeWait) {
+                            tcpStateMachine.tcpState.takeWhile { it != TcpState.CLOSED }
+                        } else {
+                            // if we aren't waiting for the TIME_WAIT timer, we can consider it closed on TIME_WAIT
+                            tcpStateMachine.tcpState.takeWhile { it != TcpState.CLOSED && it != TcpState.TIME_WAIT }
+                        }
 
-                flow.collect {
-                    logger.debug("Waiting for CLOSED: {} State: {}", clientId, it)
+                    flow.collect {
+                        logger.debug("Waiting for CLOSED: {} State: {}", clientId, it)
+                    }
                 }
+            } catch (e: Exception) {
+                logger.error("Failed to close: {}, last state: {}", e.message, tcpStateMachine.tcpState.value)
+                throw e
             }
         }
         // give a little extra time for the ACK for the FIN to from the other side to be enqueued and sent out
         Thread.sleep(100)
         runBlocking {
             isRunning.set(false)
-            outgoingPackets.add(SentinelPacket)
+            returnQueue.add(SentinelPacket)
             if (!waitForTimeWait) {
                 kAnonProxy.disconnectSession(clientAddress)
             }

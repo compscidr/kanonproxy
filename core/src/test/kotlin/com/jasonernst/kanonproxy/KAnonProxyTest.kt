@@ -98,4 +98,34 @@ class KAnonProxyTest {
 
         kAnonProxy.stop()
     }
+
+    @Test fun stopWithActiveSessions() {
+        val kAnonProxy = KAnonProxy(IcmpLinux)
+        kAnonProxy.start()
+
+        val payload = "Test Data".toByteArray()
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
+        val destinationPort: UShort = UdpEchoServer.UDP_DEFAULT_PORT.toUShort()
+        val udpHeader = UdpHeader(sourcePort, destinationPort, payload.size.toUShort(), 0u)
+        val packet =
+            Packet(
+                Ipv4Header(
+                    sourceAddress = sourceAddress,
+                    destinationAddress = destinationAddress,
+                    protocol = IpType.UDP.value,
+                    totalLength =
+                        (
+                            Ipv4Header.IP4_MIN_HEADER_LENGTH +
+                                udpHeader.totalLength +
+                                payload.size.toUShort()
+                        ).toUShort(),
+                ),
+                udpHeader,
+                payload,
+            )
+        kAnonProxy.handlePackets(listOf(packet), clientAddress)
+        kAnonProxy.stop()
+    }
 }

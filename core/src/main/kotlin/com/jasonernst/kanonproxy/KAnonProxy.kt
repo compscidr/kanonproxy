@@ -89,6 +89,12 @@ class KAnonProxy(
         for (queue in outgoingQueues.values) {
             queue.clear()
         }
+        for (sessionTable in sessionTablesBySessionKey.values) {
+            for (session in sessionTable.values) {
+                session.close()
+            }
+            sessionTable.clear()
+        }
         sessionTablesBySessionKey.clear()
         outgoingQueues.clear()
         incomingQueue.clear()
@@ -185,7 +191,7 @@ class KAnonProxy(
             }
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
-                logger.debug("New outgoing queue for client: {}", clientAddress)
+                logger.warn("New outgoing queue for client: {}", clientAddress)
                 LinkedBlockingDeque()
             }
         var isNewSession = false
@@ -239,6 +245,7 @@ class KAnonProxy(
             outgoingQueues.getOrPut(clientAddress) {
                 LinkedBlockingDeque()
             }
+        logger.debug("outgoing queue: $outgoingQueue")
         if (icmpPacket is IcmpV4EchoPacket || icmpPacket is IcmpV6EchoPacket) {
             val result =
                 runBlocking {
@@ -316,14 +323,16 @@ class KAnonProxy(
     fun takeResponse(clientAddress: InetSocketAddress): Packet {
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
-                logger.debug("No outgoing queue for client when taking response: {}", clientAddress)
+                logger.warn("No outgoing queue for client when taking response: {}", clientAddress)
                 LinkedBlockingDeque()
             }
         if (!isRunning.get()) {
             logger.warn("KAnonProxy is not running, ignoring packets")
             return SentinelPacket
         }
-        return outgoingQueue.take()
+        val packet = outgoingQueue.take()
+        logger.debug("Proxy packets remaining: {}", outgoingQueue.size)
+        return packet
     }
 
     private suspend fun sessionMaintenanceThread() {
@@ -367,9 +376,10 @@ class KAnonProxy(
     fun haveSessionForClient(
         clientAddress: InetSocketAddress,
         key: String,
-    ): Boolean = sessionTablesBySessionKey[clientAddress]?.containsKey(key) ?: false
+    ): Boolean = sessionTablesBySessionKey[clientAddress]?.containsKey(key) == true
 
     fun disconnectSession(clientAddress: InetSocketAddress) {
+        logger.warn("DISCONNECTING SESSION FOR CLIENT: {}", clientAddress)
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
                 logger.warn("No outgoing queue for client when disconnecting session: {}", clientAddress)
@@ -381,6 +391,7 @@ class KAnonProxy(
     fun flushQueue(clientAddress: InetSocketAddress) {
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
+                logger.warn("No outgoing queue for client when flushing queue: {}", clientAddress)
                 LinkedBlockingDeque()
             }
         outgoingQueue.clear()

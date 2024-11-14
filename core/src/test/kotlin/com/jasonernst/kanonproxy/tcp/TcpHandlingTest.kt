@@ -5,7 +5,10 @@ import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.kanonproxy.icmp.IcmpHandlingTest
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import com.jasonernst.testservers.server.TcpEchoServer
-import io.mockk.mockk
+import io.mockk.every
+import io.mockk.spyk
+import io.mockk.verify
+import kotlinx.coroutines.TimeoutCancellationException
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
@@ -26,7 +29,7 @@ import java.nio.ByteBuffer
 @Timeout(20)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
-    private val kAnonProxy = KAnonProxy(IcmpLinux, mockk(relaxed = true))
+    private val kAnonProxy = KAnonProxy(IcmpLinux)
 
     companion object {
         private val tcpEchoServer = TcpEchoServer()
@@ -60,6 +63,30 @@ class TcpHandlingTest {
         kAnonProxy.stop()
     }
 
+    // This test will have the proxy not bother to respond, and make sure we get more than one
+    // SYN request
+    @Test
+    fun ipv4SynRetransmit() {
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+
+        val spyProxy = spyk(kAnonProxy)
+        every { spyProxy.handlePackets(any(), any()) } answers {
+            logger.debug("Ignoring packets")
+        }
+
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, spyProxy, packetDumper)
+
+        assertThrows<TimeoutCancellationException> {
+            tcpClient.connect(2000)
+        }
+        verify(atLeast = 2) {
+            spyProxy.handlePackets(any(), any())
+        }
+    }
+
     @Test
     fun ipv4TcpHandshakeClose() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
@@ -71,6 +98,19 @@ class TcpHandlingTest {
         tcpClient.connect()
         logger.debug("Connect finished, closing client")
         tcpClient.closeClient()
+    }
+
+    @Test
+    fun ipv4TcpActiveSessionShutdown() {
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = 12345u
+        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
+        tcpClient.connect()
+        logger.debug("Connect finished, shutting down kanonProxy")
+        kAnonProxy.stop()
     }
 
     /**
@@ -209,6 +249,7 @@ class TcpHandlingTest {
         assertThrows<SocketException> { tcpClient.connect(2000) }
     }
 
+    // @RepeatedTest(5)
     @Test
     fun ipv4TcpHttp() {
         val payload = "GET / HTTP/1.1\r\nHost: xkcd.com\r\n\r\n".toByteArray()
@@ -220,30 +261,41 @@ class TcpHandlingTest {
 
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
+        logger.debug("Connected")
         tcpClient.send(ByteBuffer.wrap(payload))
-
+        logger.debug("sent")
         val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
         tcpClient.recv(recvBuffer)
+        logger.debug("Received")
 
         tcpClient.closeClient()
-        logger.debug("Starting session 2")
+        logger.debug("closed")
         kAnonProxy.flushQueue(tcpClient.clientAddress)
+        logger.debug("Starting session 2")
 
         val tcpClient2 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient2.connect()
+        logger.debug("connected")
         tcpClient2.send(ByteBuffer.wrap(payload))
-
+        logger.debug("sent")
+        recvBuffer.clear()
         tcpClient2.recv(recvBuffer)
+        logger.debug("Received")
         tcpClient2.closeClient()
-
+        logger.debug("closed")
         kAnonProxy.flushQueue(tcpClient.clientAddress)
-        logger.debug("Starting session 3")
 
+        logger.debug("Starting session 3")
         val tcpClient3 = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient3.connect()
+        logger.debug("connected")
         tcpClient3.send(ByteBuffer.wrap(payload))
+        logger.debug("sent")
+        recvBuffer.clear()
         tcpClient3.recv(recvBuffer)
+        logger.debug("Received")
         tcpClient3.closeClient()
+        logger.debug("closed")
     }
 
     @Disabled("WiP")

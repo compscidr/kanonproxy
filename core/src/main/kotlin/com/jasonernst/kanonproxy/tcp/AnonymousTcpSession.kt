@@ -50,6 +50,7 @@ class AnonymousTcpSession(
             logger.warn("We're in CLOSE_WAIT, and we have no more data to recv from remote side, sending FIN")
             val finPacket = teardown()
             if (finPacket != null) {
+                tcpStateMachine.enqueueRetransmit(finPacket)
                 returnQueue.add(finPacket)
             }
         }
@@ -58,15 +59,17 @@ class AnonymousTcpSession(
 
     override fun handlePacketFromClient(packet: Packet) {
         val responsePackets = tcpStateMachine.processHeaders(packet.ipHeader!!, packet.nextHeaders!! as TcpHeader, packet.payload!!)
-        for (response in responsePackets) {
-            logger.debug("RETURN PACKET: {}", response.nextHeaders)
-            returnQueue.put(response)
-        }
+        logger.debug("RETURN PACKETS size: {}", responsePackets.size)
+        returnQueue.addAll(responsePackets)
+//        for (response in responsePackets) {
+//            logger.debug("RETURN PACKET: {}", response.nextHeaders)
+//            returnQueue.add(response)
+//            logger.debug("RETURN QUEUE size: ${returnQueue.size}")
+//        }
 
         if (tcpStateMachine.tcpState.value == TcpState.CLOSED) {
             logger.debug("Tcp session is closed, removing from session table, {}", this)
-            // todo: we need this to be per-session at some point
-            returnQueue.put(SentinelPacket)
+            returnQueue.add(SentinelPacket)
             super.close(removeSession = true, packet = null)
         }
     }
@@ -133,12 +136,14 @@ class AnonymousTcpSession(
                 val finPacket = teardown()
                 if (finPacket != null) {
                     returnQueue.add(finPacket)
+                    tcpStateMachine.enqueueRetransmit(finPacket)
                 }
             } catch (e: Exception) {
                 logger.warn("Remote Tcp channel closed ${e.message}")
                 val finPacket = teardown()
                 if (finPacket != null) {
                     returnQueue.add(finPacket)
+                    tcpStateMachine.enqueueRetransmit(finPacket)
                 }
             }
         }

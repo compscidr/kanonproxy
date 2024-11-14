@@ -39,7 +39,7 @@ import kotlin.toUInt
  * should enqueue the incoming packets until the connection is made, and then process them during
  * the notifyRemoteConnected() call.
  *
- * @param TcpState - the initial state to start the machine with
+ * @param tcpState - the initial state to start the machine with
  * @param mtu - the maximum transmission unit. If any additional headers are to be added, the MTU should reflect the
  *   size of these extra headers. For instance, in a typical VPN app, there is often an additional IP and UDP header
  *   added. The MTU should thus be reduced my the maximum size of these IP and UDP headers that get prepended to the
@@ -47,9 +47,9 @@ import kotlin.toUInt
  */
 class TcpStateMachine(
     var tcpState: MutableStateFlow<TcpState> = MutableStateFlow(TcpState.CLOSED),
-    val mtu: UShort,
+    private val mtu: UShort,
     val session: TcpSession,
-    val receiveBufferSize: UShort = DEFAULT_BUFFER_SIZE.toUShort(),
+    private val receiveBufferSize: UShort = DEFAULT_BUFFER_SIZE.toUShort(),
     val swapSourceDestination: Boolean = false, // only time we want this is if we're a tcpClient
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -66,7 +66,6 @@ class TcpStateMachine(
     // this is data waiting to be encapsulated and sent out. The head of the buffer is equivalent to snd_una. The end
     // of the buffer is equivalent to send_nxt.
     private val outgoingMutex = Mutex()
-
     private val retransmitQueue = ConcurrentLinkedQueue<Packet>()
     private val outgoingBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
 
@@ -75,11 +74,27 @@ class TcpStateMachine(
     private var rtoJob: Job? = null
 
     companion object {
-        const val ALPHA = 1.0 / 8 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
-        const val BETA = 1.0 / 4 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
-        val G = 0.5 // clock granularity in seconds
-        val K = 4.0 // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
-        val MSL = 2.0 * 60.0 // maximum segment lifetime(s): https://datatracker.ietf.org/doc/html/rfc9293#section-3.4.2
+        // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
+        const val ALPHA = 1.0 / 8
+
+        // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
+        const val BETA = 1.0 / 4
+
+        // clock granularity in seconds
+        val G = 0.5
+
+        // https://www.rfc-editor.org/rfc/rfc6298.txt section 2.3
+        val K = 4.0
+
+        // maximum segment lifetime(s): https://datatracker.ietf.org/doc/html/rfc9293#section-3.4.2
+        val MSL = 2.0 * 60.0
+
+        // minimum of three: https://datatracker.ietf.org/doc/html/rfc9293#section-3.8.3
+        val R1 = 3
+
+        // minimum of 3 minutes for SYN (SYNs retransmitted every second according to
+        // initial RTO): https://datatracker.ietf.org/doc/html/rfc9293#section-3.8.3
+        val R2 = 180
     }
 
     fun passiveOpen() {
@@ -100,6 +115,7 @@ class TcpStateMachine(
                 transmissionControlBlock!!.passive_open = false
                 transmissionControlBlock!!.send_ts_ok = true // so that when we send syn we add the timestamp
             }
+            startRtoTimer() // so that retransmission for the SYN packet work
         }
     }
 
@@ -403,6 +419,7 @@ class TcpStateMachine(
                     )
                     transmissionControlBlock!!.snd_nxt = transmissionControlBlock!!.iss + 1u
                     transmissionControlBlock!!.snd_una.value = transmissionControlBlock!!.iss
+                    retransmitQueue.add(response)
                     startRtoTimer()
                     logger.debug("Transition to SYN_RECEIVED state")
                     tcpState.value = TcpState.SYN_RECEIVED
@@ -663,7 +680,7 @@ class TcpStateMachine(
                             tcpState.value = TcpState.LISTEN
                             return@runBlocking emptyList<Packet>()
                         } else {
-                            logger.debug("Got SYN in SYN_RECEIVED state, sending RST: {}", tcpHeader)
+                            logger.debug("Got SYN in SYN_RECEIVED state, sending Challenge ACK: {}", tcpHeader)
                             // RFC5961: recommends that in sync states, we should send a "challenge ACK" to
                             //   the remote peer. If this doesn't work, the RC793 recommends entering CLOSED
                             //   state, deleting the TCP, queues flushed.
@@ -698,6 +715,7 @@ class TcpStateMachine(
                             transmissionControlBlock!!.snd_wl1 = tcpHeader.sequenceNumber
                             transmissionControlBlock!!.snd_wl2 = tcpHeader.acknowledgementNumber
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
+                            removeAckedPacketsFromRetransmit()
 
                             // https://www.rfc-editor.org/rfc/rfc6298.txt first RTT measurement
                             val timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
@@ -733,15 +751,22 @@ class TcpStateMachine(
                             val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                             assert(payloadSize == payload.size.toUInt())
                             if (payload.isNotEmpty()) {
+                                if (tcpHeader.isPsh()) {
+                                    // this needs to happen before we write to the channel or we could
+                                    // miss the PSH at the tcp client
+                                    session.isPsh.set(true)
+                                }
                                 try {
                                     val buffer = ByteBuffer.wrap(payload)
                                     while (buffer.hasRemaining()) {
                                         session.channel.write(buffer)
                                     }
                                 } catch (e: Exception) {
-                                    val packet = session.teardown(!swapSourceDestination)
-                                    if (packet != null) {
-                                        return@runBlocking listOf(packet)
+                                    logger.warn("Error writing to channel: $e, shutting down session")
+                                    val finPacket = session.teardown(!swapSourceDestination)
+                                    if (finPacket != null) {
+                                        enqueueRetransmit(finPacket)
+                                        return@runBlocking listOf(finPacket)
                                     } else {
                                         return@runBlocking emptyList()
                                     }
@@ -756,7 +781,6 @@ class TcpStateMachine(
                                         transmissionControlBlock = transmissionControlBlock,
                                     )
                                 if (tcpHeader.isPsh()) {
-                                    session.isPsh.set(true)
                                     return@runBlocking listOf(ack)
                                 } else {
                                     setupLatestAckJob(ack)
@@ -782,6 +806,7 @@ class TcpStateMachine(
                                     )
                                 val finPacket = session.teardown(!swapSourceDestination)
                                 if (finPacket != null) {
+                                    enqueueRetransmit(finPacket)
                                     return@runBlocking listOf(ackPacket, finPacket)
                                 } else {
                                     return@runBlocking listOf(ackPacket)
@@ -980,15 +1005,22 @@ class TcpStateMachine(
                     val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
+                        if (tcpHeader.isPsh()) {
+                            // this needs to happen before we write to the channel or we could
+                            // miss the PSH at the tcp client
+                            session.isPsh.set(true)
+                        }
                         try {
                             val buffer = ByteBuffer.wrap(payload)
                             while (buffer.hasRemaining()) {
                                 session.channel.write(buffer)
                             }
                         } catch (e: Exception) {
-                            val packet = session.teardown(!swapSourceDestination)
-                            if (packet != null) {
-                                return@runBlocking listOf(packet)
+                            logger.warn("Error writing to channel: $e, shutting down session")
+                            val finPacket = session.teardown(!swapSourceDestination)
+                            if (finPacket != null) {
+                                enqueueRetransmit(finPacket)
+                                return@runBlocking listOf(finPacket)
                             } else {
                                 return@runBlocking emptyList()
                             }
@@ -1004,7 +1036,6 @@ class TcpStateMachine(
                                 transmissionControlBlock = transmissionControlBlock,
                             )
                         if (tcpHeader.isPsh()) {
-                            session.isPsh.set(true)
                             logger.debug(
                                 "Received PSH in ESTABLISHED state, sending ACK " +
                                     "immediately SEQ: " +
@@ -1044,6 +1075,7 @@ class TcpStateMachine(
                         flushpackets.add(ackPacket)
                         val finPacket = session.teardown(!swapSourceDestination)
                         if (finPacket != null) {
+                            enqueueRetransmit(finPacket)
                             flushpackets.add(finPacket)
                         }
                         return@runBlocking flushpackets
@@ -1168,6 +1200,7 @@ class TcpStateMachine(
                     // 5th: check ACK field
                     if (tcpHeader.isAck()) {
                         if (isAckAcceptable(tcpHeader)) {
+                            logger.debug("Acceptable ACK in FIN_WAIT1 state")
                             transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
                             transmissionControlBlock!!.snd_una.value = tcpHeader.acknowledgementNumber
                             updateTimestamp(tcpHeader)
@@ -1175,6 +1208,7 @@ class TcpStateMachine(
                             updateCongestionState()
                             updateSendWindow(tcpHeader)
                         } else {
+                            logger.debug("Not acceptable ACK in FIN_WAIT1 state")
                             if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una.value) {
                                 // ignore duplicate ACKs
                                 logger.debug("Duplicate ACK received, ignoring: $tcpHeader")
@@ -1233,15 +1267,22 @@ class TcpStateMachine(
                     val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
                     assert(payloadSize == payload.size.toUInt())
                     if (payload.isNotEmpty()) {
+                        if (tcpHeader.isPsh()) {
+                            // this needs to happen before we write to the channel or we could
+                            // miss the PSH at the tcp client
+                            session.isPsh.set(true)
+                        }
                         try {
                             val buffer = ByteBuffer.wrap(payload)
                             while (buffer.hasRemaining()) {
                                 session.channel.write(buffer)
                             }
                         } catch (e: Exception) {
-                            val packet = session.teardown(!swapSourceDestination)
-                            if (packet != null) {
-                                return@runBlocking listOf(packet)
+                            logger.warn("Error writing to channel: $e, shutting down session")
+                            val finPacket = session.teardown(!swapSourceDestination)
+                            if (finPacket != null) {
+                                enqueueRetransmit(finPacket)
+                                return@runBlocking listOf(finPacket)
                             } else {
                                 return@runBlocking emptyList()
                             }
@@ -1256,7 +1297,6 @@ class TcpStateMachine(
                                 transmissionControlBlock = transmissionControlBlock,
                             )
                         if (tcpHeader.isPsh()) {
-                            session.isPsh.set(true)
                             return@runBlocking listOf(ack)
                         } else {
                             setupLatestAckJob(ack)
@@ -1478,9 +1518,11 @@ class TcpStateMachine(
                             session.channel.write(buffer)
                         }
                     } catch (e: Exception) {
-                        val packet = session.teardown(!swapSourceDestination)
-                        if (packet != null) {
-                            return@runBlocking listOf(packet)
+                        logger.warn("Error writing to channel: $e, shutting down session")
+                        val finPacket = session.teardown(!swapSourceDestination)
+                        if (finPacket != null) {
+                            enqueueRetransmit(finPacket)
+                            return@runBlocking listOf(finPacket)
                         } else {
                             return@runBlocking emptyList()
                         }
@@ -2288,18 +2330,10 @@ class TcpStateMachine(
         rtoJob = null
         startRtoTimer()
 
-        while (!retransmitQueue.isEmpty()) {
+        while (retransmitQueue.isNotEmpty()) {
             // may be null if the session is shutting down
             val packet = retransmitQueue.peek() ?: break
             val previousTcpHeader = packet.nextHeaders as TcpHeader
-
-            if (tcpState.value == TcpState.FIN_WAIT_1 && previousTcpHeader.isFin()) {
-                // FIN_WAIT_1 is a special case where we have sent a FIN and are waiting for an ACK
-                // but we have not yet received the FIN from the other side. In this case, we should
-                // not remove the FIN from the retransmit queue until we receive the FIN from the
-                // other side.
-                continue
-            }
 
             if (previousTcpHeader.sequenceNumber + packet.payload!!.size.toUInt()
                 <= transmissionControlBlock!!.snd_una.value
@@ -2644,6 +2678,7 @@ class TcpStateMachine(
                             logger.debug("TEARDOWN PENDING, sending FIN")
                             val finPacket = session.teardown(!swapSourceDestination)
                             if (finPacket != null) {
+                                enqueueRetransmit(finPacket)
                                 packets.add(finPacket)
                             }
                         }
@@ -2743,10 +2778,10 @@ class TcpStateMachine(
                     val rtoExpiry = (transmissionControlBlock!!.rto * 1000L).toLong()
                     delay(rtoExpiry)
                     if (retransmitQueue.isNotEmpty()) {
-                        logger.debug("RTO expired, retransmitting")
                         // we only peek because we want to keep the packet in the queue until we get a positive ack so
                         // it doesn't get lost. It will be removed when we receive a successful ack
                         val retransmitPacket = retransmitQueue.peek()
+                        logger.debug("RTO expired after $rtoExpiry ms, retransmitting: $retransmitPacket")
                         session.returnQueue.add(retransmitPacket)
                         // When a TCP sender detects segment loss using the retransmission
                         //   timer, the value of ssthresh MUST be set to no more than the value
@@ -2792,5 +2827,9 @@ class TcpStateMachine(
                     delayedAckJob = null
                 }
         }
+    }
+
+    fun enqueueRetransmit(packet: Packet) {
+        retransmitQueue.add(packet)
     }
 }

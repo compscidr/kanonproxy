@@ -118,7 +118,7 @@ abstract class TcpSession(
                 return finPacket
             }
             else -> {
-                logger.warn("Close called in state that doesn't make sense: ${tcpStateMachine.tcpState.value}")
+                logger.warn("TEARDOWN called in state that doesn't make sense: ${tcpStateMachine.tcpState.value}")
             }
         }
         return null
