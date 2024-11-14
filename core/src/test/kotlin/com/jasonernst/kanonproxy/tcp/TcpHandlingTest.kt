@@ -111,6 +111,7 @@ class TcpHandlingTest {
         tcpClient.connect()
         logger.debug("Connect finished, shutting down kanonProxy")
         kAnonProxy.stop()
+        tcpClient.stopClient()
     }
 
     /**
@@ -128,6 +129,7 @@ class TcpHandlingTest {
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
         tcpClient.closeClient(true)
+        tcpClient.stopClient()
     }
 
     /**
@@ -247,6 +249,7 @@ class TcpHandlingTest {
 
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         assertThrows<SocketException> { tcpClient.connect(2000) }
+        tcpClient.stopClient()
     }
 
     // @RepeatedTest(5)
