@@ -24,6 +24,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.SocketException
 import java.nio.ByteBuffer
+import kotlin.random.Random
 
 // this needs to be set to 250 if we want to test the TIME_WAIT state
 @Timeout(20)
@@ -68,7 +69,7 @@ class TcpHandlingTest {
     @Test
     fun ipv4SynRetransmit() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -90,7 +91,7 @@ class TcpHandlingTest {
     @Test
     fun ipv4TcpHandshakeClose() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -103,7 +104,7 @@ class TcpHandlingTest {
     @Test
     fun ipv4TcpActiveSessionShutdown() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -122,7 +123,7 @@ class TcpHandlingTest {
     @Test
     fun ipv4TcpHandshakeCloseWaitForTimeWait() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -139,7 +140,7 @@ class TcpHandlingTest {
     @Test
     fun ipv4TwoSubsequentTcpHandshakes() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -157,7 +158,7 @@ class TcpHandlingTest {
     @Test fun ipv4TcpSendRecvEcho() {
         val payload = "Test Data".toByteArray()
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -180,7 +181,7 @@ class TcpHandlingTest {
     @Test fun ipv4TcpSendRecvEchoSecondSession() {
         val payload = "Test Data".toByteArray()
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -205,7 +206,7 @@ class TcpHandlingTest {
     @Test fun ipv4TcpSendRecvMultipleEcho() {
         val payload = "Payload1".toByteArray()
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -243,7 +244,7 @@ class TcpHandlingTest {
     @Test
     fun ipv4TcpUnreachable() {
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName(IcmpHandlingTest.UNREACHABLE_IPV4)
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
@@ -257,7 +258,7 @@ class TcpHandlingTest {
     fun ipv4TcpHttp() {
         val payload = "GET / HTTP/1.1\r\nHost: xkcd.com\r\n\r\n".toByteArray()
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("xkcd.com") as Inet4Address
         logger.debug("Destination address: ${destinationAddress.hostAddress}")
         val destinationPort: UShort = 80u
@@ -306,7 +307,7 @@ class TcpHandlingTest {
     fun ipv4TcpHttp1Mb() {
         val payload = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".toByteArray()
         val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = 12345u
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
         val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
         val destinationPort: UShort = 80u
 
