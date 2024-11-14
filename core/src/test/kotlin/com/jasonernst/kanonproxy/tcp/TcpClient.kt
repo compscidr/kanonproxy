@@ -352,9 +352,8 @@ class TcpClient(
     fun stopClient() {
         // used when we want to stop without the state machine stuff
         isRunning.set(false)
-        returnQueue.add(SentinelPacket)
-        kAnonProxy.disconnectSession(clientAddress)
         readJob.cancel()
         writeJob.cancel()
+        tcpStateMachine.cleanup()
     }
 }

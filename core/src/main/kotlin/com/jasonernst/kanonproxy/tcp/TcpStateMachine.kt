@@ -119,6 +119,14 @@ class TcpStateMachine(
         }
     }
 
+    // meant as a hard stop of any jobs that are running - mostly for tests that put thins into
+    // a weird state
+    fun cleanup() {
+        rtoJob?.cancel()
+        timeWaitJob?.cancel()
+        delayedAckJob?.cancel()
+    }
+
     /**
      * Given the current state of the session, this method will use the incoming packet headers
      * and the payload to determine the next state, and then return the appropriate packet(s) to
