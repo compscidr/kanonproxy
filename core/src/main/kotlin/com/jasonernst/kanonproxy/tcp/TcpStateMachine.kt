@@ -2114,7 +2114,11 @@ class TcpStateMachine(
         if (rtoJob == null) {
             rtoJob =
                 CoroutineScope(Dispatchers.IO).launch {
-                    val rtoExpiry = (transmissionControlBlock!!.rto * 1000L).toLong()
+                    val rtoExpiry = ((transmissionControlBlock?.rto ?: 0.0) * 1000L).toLong()
+                    if (rtoExpiry == 0L) {
+                        logger.error("RTO is 0, shouldn't have got here")
+                        return@launch
+                    }
                     delay(rtoExpiry)
                     if (retransmitQueue.isNotEmpty()) {
                         // we only peek because we want to keep the packet in the queue until we get a positive ack so
@@ -2141,11 +2145,11 @@ class TcpStateMachine(
                         //   the TCP sender uses the slow start algorithm to increase the window
                         //   from 1 full-sized segment to the new value of ssthresh, at which
                         //   point congestion avoidance again takes over.
-                        transmissionControlBlock!!.ssthresh =
+                        transmissionControlBlock?.ssthresh =
                             max(transmissionControlBlock!!.outstandingBytes().toInt() / 2, 2 * mss.toInt())
 
                         // set cwnd to 1 full-sized segment
-                        transmissionControlBlock!!.cwnd = session.tcpStateMachine.mss.toInt()
+                        transmissionControlBlock?.cwnd = session.tcpStateMachine.mss.toInt()
                     }
                     rtoJob = null
                     startRtoTimer()
