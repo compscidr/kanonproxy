@@ -47,6 +47,7 @@ class TcpClient(
     private val destinationPort: UShort,
     private val kAnonProxy: KAnonProxy,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
+    clientAddress: InetSocketAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234)
 ) : TcpSession(
         null,
         null,
@@ -54,7 +55,7 @@ class TcpClient(
         returnQueue = LinkedBlockingDeque(),
         mockk(relaxed = true),
         mockk(relaxed = true),
-        InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234),
+        clientAddress,
     ) {
     private val clientId = UUID.randomUUID()
     private val logger = LoggerFactory.getLogger(javaClass)
