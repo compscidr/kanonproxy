@@ -1,15 +1,19 @@
 [versions]
 icmp = "1.0.0"
+jna = "5.15.0"
+jnr_enxio = "0.32.18"
 jupiter = "5.11.3"
 kotlin = "2.0.21"
 kotlinter = "4.4.1"
-knet = "0.1.5"
+knet = "0.1.6"
 logback-classic = "1.5.12"
 mockk = "1.13.13"
 slf4j = "2.0.16"
 testservers = "0.0.2"
 
 [libraries]
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+jnr_enxio = { module = "com.github.jnr:jnr-enxio", version.ref = "jnr_enxio" }
 icmp_linux = { module = "com.jasonernst.icmp:icmp_linux", version.ref = "icmp" }
 junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "jupiter" }
 junit-jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "jupiter" }
