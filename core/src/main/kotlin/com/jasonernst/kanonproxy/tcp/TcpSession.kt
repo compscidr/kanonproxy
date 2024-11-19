@@ -7,6 +7,7 @@ import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
+import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -54,7 +55,7 @@ abstract class TcpSession(
         val buffer = ByteBuffer.wrap(payload)
         while (buffer.hasRemaining()) {
             tcpStateMachine.enqueueOutgoingData(buffer)
-            val packets = tcpStateMachine.encapsulateOutgoingData()
+            val packets = tcpStateMachine.encapsulateOutgoingData(requiresLock = true)
             returnQueue.addAll(packets)
         }
     }
@@ -67,61 +68,83 @@ abstract class TcpSession(
      *
      * else do nothing.
      */
-    fun teardown(swapSourceAndDestination: Boolean = true): Packet? {
-        logger.debug("Tcp session TEARDOWN function called in tcpState: ${tcpStateMachine.tcpState.value} swap?: $swapSourceAndDestination")
+    fun teardown(
+        swapSourceAndDestination: Boolean = true,
+        requiresLock: Boolean,
+    ): Packet? {
+        val packet =
+            runBlocking {
+                if (requiresLock) {
+                    logger.debug("TCP TEARDOWN CALLED, WAITING FOR LOCK")
+                    tcpStateMachine.tcbMutex.lock()
+                }
 
-        if (tcpStateMachine.outgoingBytesToSend() > 0) {
-            logger.debug("Outgoing bytes to send, setting TEARDOWN pending")
-            tearDownPending.set(true)
-            return null
-        } else {
-            logger.debug("No outgoing bytes to send, proceeding with TEARDOWN")
-        }
+                logger.debug(
+                    "Tcp session TEARDOWN function called in tcpState: ${tcpStateMachine.tcpState.value} swap?: $swapSourceAndDestination",
+                )
 
-        if (tcpStateMachine.transmissionControlBlock == null) {
-            logger.debug("No TCB, returning to CLOSED")
-            tcpStateMachine.tcpState.value = TcpState.CLOSED
-            return null
+                if (tcpStateMachine.outgoingBytesToSend() > 0) {
+                    logger.debug("Outgoing bytes to send, setting TEARDOWN pending")
+                    tearDownPending.set(true)
+                    return@runBlocking null
+                } else {
+                    logger.debug("No outgoing bytes to send, proceeding with TEARDOWN")
+                }
+
+                if (tcpStateMachine.transmissionControlBlock == null) {
+                    logger.debug("No TCB, returning to CLOSED")
+                    tcpStateMachine.tcpState.value = TcpState.CLOSED
+                    return@runBlocking null
+                }
+                if (initialIpHeader == null || initialTransportHeader == null) {
+                    logger.error("Initial headers are null, can't send FIN")
+                    tcpStateMachine.tcpState.value = TcpState.CLOSED
+                    return@runBlocking null
+                }
+                val finPacket =
+                    TcpHeaderFactory.createFinPacket(
+                        initialIpHeader!!.sourceAddress,
+                        initialIpHeader!!.destinationAddress,
+                        initialTransportHeader!!.sourcePort,
+                        initialTransportHeader!!.destinationPort,
+                        tcpStateMachine.transmissionControlBlock!!.snd_nxt,
+                        tcpStateMachine.transmissionControlBlock!!.rcv_nxt,
+                        swapSourceAndDestination,
+                        transmissionControlBlock = tcpStateMachine.transmissionControlBlock,
+                    )
+                tcpStateMachine.transmissionControlBlock!!.snd_nxt += 1u
+                tcpStateMachine.transmissionControlBlock!!.fin_seq =
+                    tcpStateMachine.transmissionControlBlock!!.snd_nxt
+                when (tcpStateMachine.tcpState.value) {
+                    TcpState.LISTEN, TcpState.SYN_SENT -> {
+                        logger.debug("Transitioning to CLOSED")
+                        tcpStateMachine.tcpState.value = TcpState.CLOSED
+                        tcpStateMachine.transmissionControlBlock = null
+                    }
+
+                    TcpState.SYN_RECEIVED, TcpState.ESTABLISHED -> {
+                        logger.debug("Transitioning to FIN_WAIT_1, sending FIN: $finPacket")
+                        tcpStateMachine.tcpState.value = TcpState.FIN_WAIT_1
+                        return@runBlocking finPacket
+                    }
+
+                    TcpState.CLOSE_WAIT -> {
+                        logger.debug("Transitioning to LAST_ACK, sending FIN: $finPacket")
+                        tcpStateMachine.tcpState.value = TcpState.LAST_ACK
+                        return@runBlocking finPacket
+                    }
+
+                    else -> {
+                        logger.warn("TEARDOWN called in state that doesn't make sense: ${tcpStateMachine.tcpState.value}")
+                    }
+                }
+                return@runBlocking null
+            }
+        if (requiresLock) {
+            tcpStateMachine.tcbMutex.unlock()
+            logger.debug("TEARDOWN LOCK RELEASED")
         }
-        if (initialIpHeader == null || initialTransportHeader == null) {
-            logger.error("Initial headers are null, can't send FIN")
-            tcpStateMachine.tcpState.value = TcpState.CLOSED
-            return null
-        }
-        val finPacket =
-            TcpHeaderFactory.createFinPacket(
-                initialIpHeader!!.sourceAddress,
-                initialIpHeader!!.destinationAddress,
-                initialTransportHeader!!.sourcePort,
-                initialTransportHeader!!.destinationPort,
-                tcpStateMachine.transmissionControlBlock!!.snd_nxt,
-                tcpStateMachine.transmissionControlBlock!!.rcv_nxt,
-                swapSourceAndDestination,
-                transmissionControlBlock = tcpStateMachine.transmissionControlBlock,
-            )
-        tcpStateMachine.transmissionControlBlock!!.snd_nxt += 1u
-        tcpStateMachine.transmissionControlBlock!!.fin_seq = tcpStateMachine.transmissionControlBlock!!.snd_nxt
-        when (tcpStateMachine.tcpState.value) {
-            TcpState.LISTEN, TcpState.SYN_SENT -> {
-                logger.debug("Transitioning to CLOSED")
-                tcpStateMachine.tcpState.value = TcpState.CLOSED
-                tcpStateMachine.transmissionControlBlock = null
-            }
-            TcpState.SYN_RECEIVED, TcpState.ESTABLISHED -> {
-                logger.debug("Transitioning to FIN_WAIT_1, sending FIN: $finPacket")
-                tcpStateMachine.tcpState.value = TcpState.FIN_WAIT_1
-                return finPacket
-            }
-            TcpState.CLOSE_WAIT -> {
-                logger.debug("Transitioning to LAST_ACK, sending FIN: $finPacket")
-                tcpStateMachine.tcpState.value = TcpState.LAST_ACK
-                return finPacket
-            }
-            else -> {
-                logger.warn("TEARDOWN called in state that doesn't make sense: ${tcpStateMachine.tcpState.value}")
-            }
-        }
-        return null
+        return packet
     }
 
     open fun mtu(): UShort =

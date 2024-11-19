@@ -48,7 +48,7 @@ class AnonymousTcpSession(
         val len = super.handleReturnTrafficLoop(maxRead)
         if (len == 0 && tcpStateMachine.tcpState.value == TcpState.CLOSE_WAIT) {
             logger.warn("We're in CLOSE_WAIT, and we have no more data to recv from remote side, sending FIN")
-            val finPacket = teardown()
+            val finPacket = teardown(requiresLock = true)
             if (finPacket != null) {
                 tcpStateMachine.enqueueRetransmit(finPacket)
                 returnQueue.add(finPacket)
@@ -133,14 +133,14 @@ class AnonymousTcpSession(
                     }
                 }
                 logger.warn("Remote Tcp channel closed")
-                val finPacket = teardown()
+                val finPacket = teardown(requiresLock = true)
                 if (finPacket != null) {
                     returnQueue.add(finPacket)
                     tcpStateMachine.enqueueRetransmit(finPacket)
                 }
             } catch (e: Exception) {
                 logger.warn("Remote Tcp channel closed ${e.message}")
-                val finPacket = teardown()
+                val finPacket = teardown(requiresLock = true)
                 if (finPacket != null) {
                     returnQueue.add(finPacket)
                     tcpStateMachine.enqueueRetransmit(finPacket)

@@ -174,6 +174,7 @@ abstract class Session(
             sessionManager.removeSession(this)
         }
         if (packet != null) {
+            logger.debug("Re-establishing session")
             // the only time this should be the case is when we're re-establishing a session
             // because we're going from TIME_WAIT to LISTEN because we have an acceptable
             // sequence number

@@ -218,7 +218,7 @@ class TcpClient(
 
         while (buffer.hasRemaining()) {
             tcpStateMachine.enqueueOutgoingData(buffer)
-            val packets = tcpStateMachine.encapsulateOutgoingData(true)
+            val packets = tcpStateMachine.encapsulateOutgoingData(swapSourceDestination = true, requiresLock = true)
             returnQueue.addAll(packets)
         }
 
@@ -268,7 +268,7 @@ class TcpClient(
         timeOutMs: Long = 2000,
     ) {
         // send the FIN
-        val finPacket = super.teardown(false)
+        val finPacket = super.teardown(false, true)
         if (finPacket != null) {
             logger.debug("Sending FIN to proxy: {}", finPacket.nextHeaders)
             tcpStateMachine.enqueueRetransmit(finPacket)
