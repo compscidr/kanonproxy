@@ -3,6 +3,8 @@ package com.jasonernst.kanonproxy
 import com.jasonernst.kanonproxy.tuntap.TunTapDevice
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.Packet.Companion.parseStream
+import com.jasonernst.packetdumper.ethernet.EtherType
+import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +31,8 @@ class Client(
     private val readFromTunJobScope = CoroutineScope(Dispatchers.IO + readFromTunJob)
     private val readFromProxyJob = SupervisorJob()
     private val readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)
+
+    private val packetDumper = PcapNgTcpServerPacketDumper()
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
@@ -58,6 +62,7 @@ class Client(
             println("Client is already connected")
             return
         }
+        packetDumper.start()
 
         println("Connecting to server: $socketAddress")
         socket.connect(socketAddress)
@@ -93,6 +98,7 @@ class Client(
             val packets = parseStream(stream)
             for (packet in packets) {
                 tunTapDevice.write(ByteBuffer.wrap(packet.toByteArray()))
+                packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = EtherType.DETECT)
             }
         }
         logger.warn("No longer reading from server")
@@ -103,6 +109,7 @@ class Client(
             val buffer = packet.toByteArray()
             val datagramPacket = DatagramPacket(buffer, buffer.size, socketAddress)
             socket.send(datagramPacket)
+            packetDumper.dumpBuffer(ByteBuffer.wrap(buffer), etherType = EtherType.DETECT)
         }
     }
 
@@ -131,6 +138,6 @@ class Client(
     }
 
     fun close() {
-        TODO()
+        packetDumper.stop()
     }
 }
