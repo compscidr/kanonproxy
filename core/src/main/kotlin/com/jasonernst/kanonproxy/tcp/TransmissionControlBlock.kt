@@ -76,4 +76,8 @@ data class TransmissionControlBlock(
         } else {
             (UInt.MAX_VALUE - snd_una.value) + snd_nxt
         }
+
+    // override so we can see the value of snd_una in the debugger
+    override fun toString(): String =
+        "TCB(snd_una=${snd_una.value}, snd_nxt=$snd_nxt, snd_wnd=$snd_wnd, snd_up=$snd_up, snd_wl1=$snd_wl1, snd_wl2=$snd_wl2, iss=$iss, rcv_nxt=$rcv_nxt, rcv_wnd=$rcv_wnd, rcv_up=$rcv_up, irs=$irs, send_ts_ok=$send_ts_ok, passive_open=$passive_open, fin_seq=$fin_seq, fin_acked=$fin_acked, time_wait_time_ms=$time_wait_time_ms, srtt=$srtt, rttvar=$rttvar, rto=$rto, iw=$iw, ssthresh=$ssthresh, cwnd=$cwnd, rwnd=$rwnd, congestionState=$congestionState, sack_permitted=$sack_permitted, last_timestamp=$last_timestamp)"
 }

@@ -75,8 +75,9 @@ abstract class TcpSession(
         val packet =
             runBlocking {
                 if (requiresLock) {
-                    logger.debug("TCP TEARDOWN CALLED, WAITING FOR LOCK")
+                    logger.warn("TCP TEARDOWN CALLED, WAITING FOR LOCK")
                     tcpStateMachine.tcbMutex.lock()
+                    logger.warn("TCP TEARDOWN LOCK ACQUIRED")
                 }
 
                 logger.debug(
@@ -102,19 +103,30 @@ abstract class TcpSession(
                     return@runBlocking null
                 }
                 val finPacket =
-                    TcpHeaderFactory.createFinPacket(
-                        initialIpHeader!!.sourceAddress,
-                        initialIpHeader!!.destinationAddress,
-                        initialTransportHeader!!.sourcePort,
-                        initialTransportHeader!!.destinationPort,
-                        tcpStateMachine.transmissionControlBlock!!.snd_nxt,
-                        tcpStateMachine.transmissionControlBlock!!.rcv_nxt,
-                        swapSourceAndDestination,
-                        transmissionControlBlock = tcpStateMachine.transmissionControlBlock,
-                    )
-                tcpStateMachine.transmissionControlBlock!!.snd_nxt += 1u
-                tcpStateMachine.transmissionControlBlock!!.fin_seq =
-                    tcpStateMachine.transmissionControlBlock!!.snd_nxt
+                    if (tcpStateMachine.transmissionControlBlock!!.fin_seq != 0u) {
+                        logger.debug("FIN already sent, not sending another")
+                        null
+                    } else {
+                        TcpHeaderFactory.createFinPacket(
+                            initialIpHeader!!.sourceAddress,
+                            initialIpHeader!!.destinationAddress,
+                            initialTransportHeader!!.sourcePort,
+                            initialTransportHeader!!.destinationPort,
+                            tcpStateMachine.transmissionControlBlock!!.snd_nxt,
+                            tcpStateMachine.transmissionControlBlock!!.rcv_nxt,
+                            swapSourceAndDestination,
+                            transmissionControlBlock = tcpStateMachine.transmissionControlBlock,
+                        )
+                    }
+
+                if (finPacket != null) {
+                    // only do this if we're actually sending a FIN, otherwise we'll wind up with a bad fin_seq and
+                    // never close correctly.
+                    tcpStateMachine.transmissionControlBlock!!.snd_nxt += 1u
+                    tcpStateMachine.transmissionControlBlock!!.fin_seq =
+                        tcpStateMachine.transmissionControlBlock!!.snd_nxt
+                }
+
                 when (tcpStateMachine.tcpState.value) {
                     TcpState.LISTEN, TcpState.SYN_SENT -> {
                         logger.debug("Transitioning to CLOSED")
@@ -142,7 +154,7 @@ abstract class TcpSession(
             }
         if (requiresLock) {
             tcpStateMachine.tcbMutex.unlock()
-            logger.debug("TEARDOWN LOCK RELEASED")
+            logger.warn("TCP TEARDOWN LOCK RELEASED")
         }
         return packet
     }

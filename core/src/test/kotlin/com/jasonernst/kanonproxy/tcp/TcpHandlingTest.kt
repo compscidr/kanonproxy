@@ -253,6 +253,27 @@ class TcpHandlingTest {
         tcpClient.stopClient()
     }
 
+    @Test
+    fun ipv4TcpConnectServerAfterReply() {
+        tcpEchoServer.stop()
+        tcpEchoServer.setShutDownAfterReply(true)
+        tcpEchoServer.start()
+
+        val payload = "Test Data".toByteArray()
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
+        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
+        tcpClient.connect()
+
+        // send, recv
+        tcpClient.send(ByteBuffer.wrap(payload))
+        val recvBuffer = ByteBuffer.allocate(payload.size)
+        tcpClient.recv(recvBuffer)
+        tcpClient.closeClient()
+    }
+
     // @RepeatedTest(5)
     @Test
     fun ipv4TcpHttp() {

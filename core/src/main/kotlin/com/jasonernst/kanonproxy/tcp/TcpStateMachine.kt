@@ -158,9 +158,9 @@ class TcpStateMachine(
         tcpHeader: TcpHeader,
         payload: ByteArray,
     ): List<Packet> {
+        logger.warn("Packet handling, acquiring lock")
         val packets =
             runBlocking {
-                logger.debug("Packet handling, acquiring lock")
                 tcbMutex.withLock {
                     if (payload.isNotEmpty()) {
                         logger.trace("Handling state: {} {} Payload:{} bytes", tcpState.value, tcpHeader, payload.size)
@@ -226,7 +226,7 @@ class TcpStateMachine(
                     }
                 }
             }
-        logger.debug("Packet handling, releasing lock")
+        logger.warn("Packet handling, releasing lock")
 
         // run this outside of the mutex since it also requires locking
         val encapsulatedPackets = encapsulateOutgoingData(swapSourceDestination, false)
@@ -896,51 +896,6 @@ class TcpStateMachine(
         // 8th: check the FIN bit
         checkFinBit(ipHeader, tcpHeader, packets)
         return packets
-
-        if (tcpHeader.isFin()) {
-            logger.debug("GOT FINNNNNNNNNN")
-            transmissionControlBlock!!.rcv_nxt++ // advance RCV.NXT over the FIN
-            transmissionControlBlock!!.last_timestamp = TcpOptionTimestamp.maybeTimestamp(tcpHeader)
-            if (transmissionControlBlock!!.fin_acked) {
-                logger.debug("Received FIN after our FIN has been acked, transition to TIME_WAIT: $tcpHeader")
-                // TODO: turn off other timers?
-                transmissionControlBlock!!.time_wait_time_ms = System.currentTimeMillis()
-                tcpState.value = TcpState.TIME_WAIT
-                if (timeWaitJob != null) {
-                    timeWaitJob!!.cancel()
-                }
-                timeWaitJob =
-                    CoroutineScope(Dispatchers.IO).launch {
-                        logger.debug("TIME_WAIT timer started")
-                        delay((2 * MSL * 1000).toLong())
-                        tcbMutex.withLock {
-                            if (tcpState.value == TcpState.TIME_WAIT) {
-                                logger.debug("TIME_WAIT timer expired, transitioning to CLOSED")
-                                tcpState.value = TcpState.CLOSED
-                                isClosed = true
-                                transmissionControlBlock = null
-                                outgoingBuffer.clear()
-                            }
-                        }
-                    }
-                rtoJob?.cancel()
-                rtoJob = null
-            } else {
-                logger.debug("Received FIN, but our's hasn't been ACK'd transitioning to CLOSING state: $tcpHeader")
-                tcpState.value = TcpState.CLOSING
-            }
-            return listOf(
-                TcpHeaderFactory.createAckPacket(
-                    ipHeader,
-                    tcpHeader,
-                    seqNumber = transmissionControlBlock!!.snd_nxt,
-                    ackNumber = transmissionControlBlock!!.rcv_nxt,
-                    transmissionControlBlock = transmissionControlBlock,
-                ),
-            )
-        }
-        logger.warn("Shouldn't have got here")
-        return emptyList()
     }
 
     private fun handleFinWait2State(
@@ -1100,27 +1055,10 @@ class TcpStateMachine(
         if (tcpHeader.acknowledgementNumber == transmissionControlBlock!!.fin_seq) {
             logger.debug("Received ACK for FIN in CLOSING state, transitioning to TIME_WAIT: $tcpHeader")
             transmissionControlBlock!!.fin_acked = true
-            tcpState.value = TcpState.TIME_WAIT
-            if (timeWaitJob != null) {
-                timeWaitJob!!.cancel()
-            }
-            timeWaitJob =
-                CoroutineScope(Dispatchers.IO).launch {
-                    logger.debug("TIME_WAIT timer started")
-                    delay((2 * MSL * 1000).toLong())
-                    tcbMutex.withLock {
-                        if (tcpState.value == TcpState.TIME_WAIT) {
-                            logger.debug("TIME_WAIT timer expired, transitioning to CLOSED")
-                            tcpState.value = TcpState.CLOSED
-                            isClosed = true
-                            transmissionControlBlock = null
-                            outgoingBuffer.clear()
-                        }
-                    }
-                }
+            startTimeWaitTimers()
         } else {
             logger.debug(
-                "didn't get ACK for FIN, expecting " +
+                "didn't get ACK for FIN in CLOSING state, expecting " +
                     "${transmissionControlBlock!!.fin_seq}, got " +
                     "${tcpHeader.acknowledgementNumber}, ignoring segment: $tcpHeader",
             )
@@ -1802,6 +1740,9 @@ class TcpStateMachine(
                 if (tcpHeader.acknowledgementNumber <= transmissionControlBlock!!.snd_una.value) {
                     // ignore duplicate ACKs
                     logger.debug("Duplicate ACK received in ${tcpState.value} state, ignoring: $tcpHeader")
+                    // we return true because we don't want to necessarily drop the packet if the ACK is duplicate. We
+                    // will only do that if we've already received the sequence number. All this does is prevent us from
+                    // updating windows, etc.
                     return true
                 }
                 if (tcpHeader.acknowledgementNumber > transmissionControlBlock!!.snd_nxt) {
@@ -1904,7 +1845,7 @@ class TcpStateMachine(
                     return false
                 }
             }
-            logger.debug("Wrote ${payload.size} bytes to channel")
+            logger.debug("Accepted ${payload.size} bytes of data")
             transmissionControlBlock!!.rcv_nxt += payload.size.toUInt()
             val ack =
                 TcpHeaderFactory.createAckPacket(
@@ -1938,20 +1879,20 @@ class TcpStateMachine(
         return runBlocking {
             val bytesToEnqueue =
                 outgoingMutex.withLock {
-                    logger.debug("ENQ: Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+                    // logger.debug("ENQ: Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                     // if we've previously compacted we won't get into here (just to reset us from read mode to write mode)
                     if (outgoingBuffer.limit() != outgoingBuffer.capacity()) {
                         // this should set us up so that we are writing right after the last byte we wrote previously
                         // with a limit of the rest of the buffer
                         outgoingBuffer.compact()
-                        logger.debug(
-                            "ENQ: After compact Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}",
-                        )
+//                        logger.debug(
+//                            "ENQ: After compact Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}",
+//                        )
                     }
                     val bytesToEnqueue = min(buffer.remaining(), outgoingBuffer.remaining())
                     outgoingBuffer.put(buffer.array(), buffer.position(), bytesToEnqueue)
                     buffer.position(buffer.position() + bytesToEnqueue)
-                    logger.debug("ENQ: After write Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
+//                    logger.debug("ENQ: After write Outgoing buffer position: ${outgoingBuffer.position()} limit: ${outgoingBuffer.limit()}")
                     return@withLock bytesToEnqueue
                 }
             return@runBlocking bytesToEnqueue
@@ -1991,7 +1932,6 @@ class TcpStateMachine(
         swapSourceDestination: Boolean = false,
         requiresLock: Boolean,
     ): List<Packet> {
-        logger.debug("ENC PACKETS TAKING LOCK")
         val packets =
             runBlocking {
                 val packets = ArrayList<Packet>()
@@ -2024,6 +1964,7 @@ class TcpStateMachine(
 
                 outgoingMutex.withLock {
                     if (requiresLock) {
+                        logger.warn("ENCAP PACKETS TAKING LOCK")
                         tcbMutex.lock()
                     }
                     do {
@@ -2049,6 +1990,7 @@ class TcpStateMachine(
                             outgoingBuffer.compact()
                             if (requiresLock) {
                                 tcbMutex.unlock()
+                                logger.warn("ENCAP PACKETS LOCK RELEASED")
                             }
                             return@runBlocking packets
                         }
@@ -2120,6 +2062,7 @@ class TcpStateMachine(
                     } while (outgoingBuffer.hasRemaining())
                     if (requiresLock) {
                         tcbMutex.unlock()
+                        logger.warn("ENCAP PACKETS LOCK RELEASED")
                     }
                 }
                 if (packets.isNotEmpty()) {
@@ -2129,7 +2072,6 @@ class TcpStateMachine(
                 }
                 return@runBlocking packets
             }
-        logger.debug("ENCAP PACKETS LOCK RELEASED")
         return packets
     }
 
