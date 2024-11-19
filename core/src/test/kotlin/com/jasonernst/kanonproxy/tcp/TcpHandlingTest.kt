@@ -22,6 +22,7 @@ import org.junit.jupiter.api.assertThrows
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketException
 import java.nio.ByteBuffer
 import kotlin.random.Random
@@ -321,6 +322,42 @@ class TcpHandlingTest {
         logger.debug("Received")
         tcpClient3.closeClient()
         logger.debug("closed")
+    }
+
+    @Test
+    fun ipv4TcpMultipleConcurrentClients() {
+        val payload = "GET / HTTP/1.1\r\nHost: xkcd.com\r\n\r\n".toByteArray()
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val destinationAddress = InetAddress.getByName("xkcd.com") as Inet4Address
+        val destinationPort: UShort = 80u
+
+        val sourcePort1 = Random.nextInt(1024, 65535).toUShort()
+        val sourcePort2 = Random.nextInt(1024, 65535).toUShort()
+
+        val client = TcpClient(sourceAddress, destinationAddress, sourcePort1, destinationPort, kAnonProxy, packetDumper, clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234))
+        val client2 = TcpClient(sourceAddress, destinationAddress, sourcePort2, destinationPort, kAnonProxy, packetDumper, clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 4321))
+
+        val t1 = Thread {
+            client.connect()
+            client.send(ByteBuffer.wrap(payload))
+            val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+            client.recv(recvBuffer)
+            client.closeClient()
+        }
+
+        val t2 = Thread {
+            client2.connect()
+            client2.send(ByteBuffer.wrap(payload))
+            val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+            client2.recv(recvBuffer)
+            client2.closeClient()
+        }
+
+        t1.start()
+        t2.start()
+
+        t1.join()
+        t2.join()
     }
 
     @Disabled("WiP")
