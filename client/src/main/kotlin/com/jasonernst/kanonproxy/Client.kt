@@ -32,7 +32,7 @@ class Client(
     private val readFromProxyJob = SupervisorJob()
     private val readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)
 
-    private val packetDumper = PcapNgTcpServerPacketDumper()
+    private val packetDumper = PcapNgTcpServerPacketDumper(isSimple = false)
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
