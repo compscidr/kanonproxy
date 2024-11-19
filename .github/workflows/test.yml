@@ -54,3 +54,9 @@ jobs:
       - name: End to End Tests
         run: |
           bash client/scripts/tuntap.sh $USER
+          ./gradlew :client:run &
+          ./gradlew :server:run &
+          sleep 5
+          ping -I kanon -c 5 8.8.8.8
+          curl --interface kanon https://www.google.com
+          bash client/scripts/cleanup.sh
