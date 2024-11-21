@@ -11,6 +11,7 @@ import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -123,12 +124,14 @@ class TcpStateMachine(
         logger.debug("Active open complete")
     }
 
-    // meant as a hard stop of any jobs that are running - mostly for tests that put thins into
+    // meant as a hard stop of any jobs that are running - mostly for tests that put things into
     // a weird state
     fun cleanup() {
-        rtoJob?.cancel()
-        timeWaitJob?.cancel()
-        delayedAckJob?.cancel()
+        runBlocking {
+            rtoJob?.cancelAndJoin()
+            timeWaitJob?.cancelAndJoin()
+            delayedAckJob?.cancelAndJoin()
+        }
     }
 
     /**

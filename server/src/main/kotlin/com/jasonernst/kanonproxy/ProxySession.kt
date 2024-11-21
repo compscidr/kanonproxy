@@ -1,5 +1,6 @@
 package com.jasonernst.kanonproxy
 
+import com.jasonernst.knet.SentinelPacket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,10 +38,10 @@ class ProxySession(
         while (isRunning.get()) {
             logger.debug("Waiting for response from proxy for client: $clientAddress")
             val response = kAnonProxy.takeResponse(clientAddress)
-//            if (response is SentinelPacket) {
-//                logger.warn("Received sentinel packet, stopping ProxySession: $clientAddress")
-//                isRunning.set(false)
-//            }
+            if (response is SentinelPacket) {
+                logger.warn("Received sentinel packet, stopping ProxySession: $clientAddress")
+                isRunning.set(false)
+            }
             logger.debug("Received response from proxy for client: $clientAddress, sending datagram back")
             val buffer = response.toByteArray()
             val datagramPacket = DatagramPacket(buffer, buffer.size, clientAddress)
