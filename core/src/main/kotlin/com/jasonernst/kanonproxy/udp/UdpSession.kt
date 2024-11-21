@@ -5,8 +5,8 @@ import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.kanonproxy.Session
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
-import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.knet.Packet
+import com.jasonernst.knet.network.icmp.IcmpFactory
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
@@ -78,9 +78,11 @@ class UdpSession(
                         // source address for the Icmp header, send it back to the client as if its the clients own OS
                         // telling it that its unreachable
                         initialIpHeader.sourceAddress,
-                        initialIpHeader,
-                        initialTransportHeader,
-                        initialPayload,
+                        Packet(
+                            initialIpHeader,
+                            initialTransportHeader,
+                            initialPayload,
+                        ),
                         mtu.toInt(),
                     )
                 returnQueue.add(response)

@@ -334,24 +334,44 @@ class TcpHandlingTest {
         val sourcePort1 = Random.nextInt(1024, 65535).toUShort()
         val sourcePort2 = Random.nextInt(1024, 65535).toUShort()
 
-        val client = TcpClient(sourceAddress, destinationAddress, sourcePort1, destinationPort, kAnonProxy, packetDumper, clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234))
-        val client2 = TcpClient(sourceAddress, destinationAddress, sourcePort2, destinationPort, kAnonProxy, packetDumper, clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 4321))
+        val client =
+            TcpClient(
+                sourceAddress,
+                destinationAddress,
+                sourcePort1,
+                destinationPort,
+                kAnonProxy,
+                packetDumper,
+                clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234),
+            )
+        val client2 =
+            TcpClient(
+                sourceAddress,
+                destinationAddress,
+                sourcePort2,
+                destinationPort,
+                kAnonProxy,
+                packetDumper,
+                clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 4321),
+            )
 
-        val t1 = Thread {
-            client.connect()
-            client.send(ByteBuffer.wrap(payload))
-            val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
-            client.recv(recvBuffer)
-            client.closeClient()
-        }
+        val t1 =
+            Thread {
+                client.connect()
+                client.send(ByteBuffer.wrap(payload))
+                val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+                client.recv(recvBuffer)
+                client.closeClient()
+            }
 
-        val t2 = Thread {
-            client2.connect()
-            client2.send(ByteBuffer.wrap(payload))
-            val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
-            client2.recv(recvBuffer)
-            client2.closeClient()
-        }
+        val t2 =
+            Thread {
+                client2.connect()
+                client2.send(ByteBuffer.wrap(payload))
+                val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+                client2.recv(recvBuffer)
+                client2.closeClient()
+            }
 
         t1.start()
         t2.start()

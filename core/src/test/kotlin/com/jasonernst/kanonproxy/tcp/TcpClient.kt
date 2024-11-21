@@ -47,7 +47,7 @@ class TcpClient(
     private val destinationPort: UShort,
     private val kAnonProxy: KAnonProxy,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
-    clientAddress: InetSocketAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234)
+    clientAddress: InetSocketAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234),
 ) : TcpSession(
         null,
         null,
