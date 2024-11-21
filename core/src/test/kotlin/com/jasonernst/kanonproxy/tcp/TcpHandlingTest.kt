@@ -265,7 +265,7 @@ class TcpHandlingTest {
         assertThrows<SocketException> { tcpClient.connect(2000) }
         tcpClient.stopClient()
     }
-    
+
     @Test
     fun ipv4TcpConnectServerDisconnectAfterReply() {
         tcpEchoServer.stop()
