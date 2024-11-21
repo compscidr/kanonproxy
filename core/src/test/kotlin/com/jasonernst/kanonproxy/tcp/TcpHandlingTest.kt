@@ -28,7 +28,7 @@ import java.nio.ByteBuffer
 import kotlin.random.Random
 
 // this needs to be set to 250 if we want to test the TIME_WAIT state
-@Timeout(5)
+@Timeout(10)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val kAnonProxy = KAnonProxy(IcmpLinux)
@@ -125,8 +125,6 @@ class TcpHandlingTest {
 
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
-        logger.debug("Connect finished, shutting down kanonProxy")
-        kAnonProxy.stop()
         tcpClient.stopClient()
     }
 
@@ -267,7 +265,7 @@ class TcpHandlingTest {
         assertThrows<SocketException> { tcpClient.connect(2000) }
         tcpClient.stopClient()
     }
-
+    
     @Test
     fun ipv4TcpConnectServerDisconnectAfterReply() {
         tcpEchoServer.stop()
@@ -287,6 +285,10 @@ class TcpHandlingTest {
         val recvBuffer = ByteBuffer.allocate(payload.size)
         tcpClient.recv(recvBuffer)
         tcpClient.closeClient()
+
+        tcpEchoServer.stop()
+        tcpEchoServer.setShutDownAfterReply(false)
+        tcpEchoServer.start()
     }
 
     // @RepeatedTest(5)

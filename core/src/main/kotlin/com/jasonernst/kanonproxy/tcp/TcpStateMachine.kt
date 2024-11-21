@@ -579,6 +579,8 @@ class TcpStateMachine(
 
                     logger.debug("TCB: $transmissionControlBlock")
 
+                    removeAckedPacketsFromRetransmit() // remove any outstanding syn packets
+
                     // todo: Data or controls that were queued for
                     //         transmission MAY be included.  Some TCP implementations
                     //         suppress sending this segment when the received segment
@@ -707,46 +709,10 @@ class TcpStateMachine(
                 }
             }
 
-//            // 7th: process the segment text
-            // TODO: doesn't seem to match spec
-//            val payloadSize = ipHeader.getPayloadLength() - tcpHeader.getHeaderLength()
-//            assert(payloadSize == payload.size.toUInt())
-//            if (payload.isNotEmpty()) {
-//                if (tcpHeader.isPsh()) {
-//                    // this needs to happen before we write to the channel or we could
-//                    // miss the PSH at the tcp client
-//                    session.isPsh.set(true)
-//                }
-//                try {
-//                    val buffer = ByteBuffer.wrap(payload)
-//                    while (buffer.hasRemaining()) {
-//                        session.channel.write(buffer)
-//                    }
-//                } catch (e: Exception) {
-//                    logger.warn("Error writing to channel: $e, shutting down session")
-//                    val finPacket = session.teardown(!swapSourceDestination)
-//                    if (finPacket != null) {
-//                        enqueueRetransmit(finPacket)
-//                        return listOf(finPacket)
-//                    } else {
-//                        return emptyList()
-//                    }
-//                }
-//                transmissionControlBlock!!.rcv_nxt += payload.size.toUInt()
-//                val ack =
-//                    TcpHeaderFactory.createAckPacket(
-//                        ipHeader,
-//                        tcpHeader,
-//                        seqNumber = transmissionControlBlock!!.snd_nxt,
-//                        ackNumber = transmissionControlBlock!!.rcv_nxt,
-//                        transmissionControlBlock = transmissionControlBlock,
-//                    )
-//                if (tcpHeader.isPsh()) {
-//                    return listOf(ack)
-//                } else {
-//                    setupLatestAckJob(ack)
-//                }
-//            }
+            // 7th: process the segment text
+            if (!processText(ipHeader, tcpHeader, payload, packets)) {
+                return packets
+            }
 
             // 8th: check the FIN bit
             checkFinBit(ipHeader, tcpHeader, packets)
