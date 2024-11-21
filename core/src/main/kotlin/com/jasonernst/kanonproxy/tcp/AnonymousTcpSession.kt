@@ -4,9 +4,9 @@ import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
-import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
+import com.jasonernst.knet.network.icmp.IcmpFactory
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
@@ -108,9 +108,7 @@ class AnonymousTcpSession(
                         // source address for the Icmp header, send it back to the client as if its the clients own OS
                         // telling it that its unreachable
                         initialIpHeader.sourceAddress,
-                        initialIpHeader,
-                        initialTransportHeader,
-                        initialPayload,
+                        Packet(initialIpHeader, initialTransportHeader, initialPayload),
                         mtu.toInt(),
                     )
                 returnQueue.add(response)
