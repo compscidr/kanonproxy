@@ -4,9 +4,8 @@ import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
-import com.jasonernst.kanonproxy.icmp.IcmpFactory
 import com.jasonernst.knet.Packet
-import com.jasonernst.knet.SentinelPacket
+import com.jasonernst.knet.network.icmp.IcmpFactory
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
@@ -69,7 +68,6 @@ class AnonymousTcpSession(
 
         if (tcpStateMachine.tcpState.value == TcpState.CLOSED) {
             logger.debug("Tcp session is closed, removing from session table, {}", this)
-            returnQueue.add(SentinelPacket)
             super.close(removeSession = true, packet = null)
         }
     }
@@ -90,7 +88,7 @@ class AnonymousTcpSession(
                 startIncomingHandling()
             } catch (e: Exception) {
                 // this should catch any exceptions trying to make the TCP connection (timeout, not reachable etc.)
-                logger.error("Error creating the TCP session: ${e.message}")
+                logger.error("Error creating the TCP session: $e")
                 val code =
                     when (initialIpHeader.sourceAddress) {
                         is Inet4Address -> IcmpV4DestinationUnreachableCodes.HOST_UNREACHABLE
@@ -108,9 +106,7 @@ class AnonymousTcpSession(
                         // source address for the Icmp header, send it back to the client as if its the clients own OS
                         // telling it that its unreachable
                         initialIpHeader.sourceAddress,
-                        initialIpHeader,
-                        initialTransportHeader,
-                        initialPayload,
+                        Packet(initialIpHeader, initialTransportHeader, initialPayload),
                         mtu.toInt(),
                     )
                 returnQueue.add(response)

@@ -378,16 +378,6 @@ class KAnonProxy(
         key: String,
     ): Boolean = sessionTablesBySessionKey[clientAddress]?.containsKey(key) == true
 
-    fun disconnectSession(clientAddress: InetSocketAddress) {
-        logger.warn("DISCONNECTING SESSION FOR CLIENT: {}", clientAddress)
-        val outgoingQueue =
-            outgoingQueues.getOrPut(clientAddress) {
-                logger.warn("No outgoing queue for client when disconnecting session: {}", clientAddress)
-                LinkedBlockingDeque()
-            }
-        outgoingQueue.put(SentinelPacket)
-    }
-
     fun flushQueue(clientAddress: InetSocketAddress) {
         val outgoingQueue =
             outgoingQueues.getOrPut(clientAddress) {
@@ -401,5 +391,16 @@ class KAnonProxy(
         logger.debug("Removing session: {}", session)
         val sessionTableBySessionKey = sessionTablesBySessionKey[session.clientAddress] ?: return
         sessionTableBySessionKey.remove(session.getKey())
+
+        if (sessionTableBySessionKey.isEmpty()) {
+            logger.debug("No more sessions for client: {}, removing from session table", session.clientAddress)
+            sessionTablesBySessionKey.remove(session.clientAddress)
+            val outgoingQueue =
+                outgoingQueues.getOrPut(session.clientAddress) {
+                    logger.warn("No outgoing queue for client when removing session queue: {}", session.clientAddress)
+                    LinkedBlockingDeque()
+                }
+            outgoingQueue.put(SentinelPacket)
+        }
     }
 }
