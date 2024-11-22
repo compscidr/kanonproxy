@@ -47,7 +47,7 @@ class TcpClient(
     private val destinationPort: UShort,
     private val kAnonProxy: KAnonProxy,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
-    clientAddress: InetSocketAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234)
+    clientAddress: InetSocketAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234),
 ) : TcpSession(
         null,
         null,
@@ -141,8 +141,9 @@ class TcpClient(
             } else if (packet.nextHeaders is IcmpNextHeaderWrapper) {
                 val icmpHeader = (packet.nextHeaders as IcmpNextHeaderWrapper).icmpHeader
                 if (icmpHeader is IcmpV4DestinationUnreachablePacket || icmpHeader is IcmpV6DestinationUnreachablePacket) {
-                    logger.debug("Got Icmp unreachable, closing")
-                    closeClient()
+                    logger.debug("Got Icmp unreachable, stopping")
+                    tcpStateMachine.tcpState.value = TcpState.CLOSED
+                    stopClient()
                 }
             } else {
                 logger.warn("Got unexpected packet type: {}", packet.nextHeaders)
@@ -185,6 +186,7 @@ class TcpClient(
 
         // this will block until we reach the established state or closed state, or until a timeout occurs
         // if a timeout occurs, an exception will be thrown
+        val session = this
         runBlocking {
             try {
                 logger.debug("{} Waiting for connection to establish", clientId)
@@ -198,6 +200,8 @@ class TcpClient(
                 }
             } catch (e: Exception) {
                 logger.error("Failed to connect: {}, last state: {}", e.message, tcpStateMachine.tcpState.value)
+                isRunning.set(false)
+                kAnonProxy.removeSession(session)
                 throw e
             }
         }
@@ -307,11 +311,12 @@ class TcpClient(
         }
         // give a little extra time for the ACK for the FIN to from the other side to be enqueued and sent out
         Thread.sleep(100)
+        val session = this
         runBlocking {
             isRunning.set(false)
             returnQueue.add(SentinelPacket)
             if (!waitForTimeWait) {
-                kAnonProxy.disconnectSession(clientAddress)
+                kAnonProxy.removeSession(session)
             }
             logger.debug("Waiting for readjob to finish")
             readJob.cancelAndJoin()
@@ -351,10 +356,23 @@ class TcpClient(
     override fun getProtocol(): UByte = IpType.TCP.value
 
     fun stopClient() {
+        if (isRunning.get().not()) {
+            logger.debug("Already stopping")
+            return
+        }
         // used when we want to stop without the state machine stuff
         isRunning.set(false)
-        readJob.cancel()
-        writeJob.cancel()
+        val session = this
+        runBlocking {
+            logger.debug("Waiting for readjob to stop")
+            kAnonProxy.removeSession(session)
+            readJob.cancelAndJoin()
+            logger.debug("readjob stopped. Waiting for writejob to stop")
+            writeJob.cancelAndJoin()
+            logger.debug("writejob stopped")
+        }
+        logger.debug("Waiting for tcpState machine cleanup")
         tcpStateMachine.cleanup()
+        logger.debug("tcpState machine cleanup finished")
     }
 }

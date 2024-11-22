@@ -28,7 +28,7 @@ import java.nio.ByteBuffer
 import kotlin.random.Random
 
 // this needs to be set to 250 if we want to test the TIME_WAIT state
-@Timeout(20)
+@Timeout(10)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val kAnonProxy = KAnonProxy(IcmpLinux)
@@ -65,6 +65,16 @@ class TcpHandlingTest {
         kAnonProxy.stop()
     }
 
+    @Test fun tcpClientStartStop() {
+        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
+        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
+        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
+        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
+        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
+        tcpClient.connect()
+        tcpClient.stopClient()
+    }
+
     // This test will have the proxy not bother to respond, and make sure we get more than one
     // SYN request
     @Test
@@ -78,7 +88,6 @@ class TcpHandlingTest {
         every { spyProxy.handlePackets(any(), any()) } answers {
             logger.debug("Ignoring packets")
         }
-
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, spyProxy, packetDumper)
 
         assertThrows<TimeoutCancellationException> {
@@ -87,6 +96,11 @@ class TcpHandlingTest {
         verify(atLeast = 2) {
             spyProxy.handlePackets(any(), any())
         }
+
+        every { spyProxy.removeSession(any()) } answers {
+            kAnonProxy.removeSession(firstArg())
+        }
+        tcpClient.stopClient()
     }
 
     @Test
@@ -111,8 +125,6 @@ class TcpHandlingTest {
 
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
         tcpClient.connect()
-        logger.debug("Connect finished, shutting down kanonProxy")
-        kAnonProxy.stop()
         tcpClient.stopClient()
     }
 
@@ -255,7 +267,7 @@ class TcpHandlingTest {
     }
 
     @Test
-    fun ipv4TcpConnectServerAfterReply() {
+    fun ipv4TcpConnectServerDisconnectAfterReply() {
         tcpEchoServer.stop()
         tcpEchoServer.setShutDownAfterReply(true)
         tcpEchoServer.start()
@@ -273,6 +285,10 @@ class TcpHandlingTest {
         val recvBuffer = ByteBuffer.allocate(payload.size)
         tcpClient.recv(recvBuffer)
         tcpClient.closeClient()
+
+        tcpEchoServer.stop()
+        tcpEchoServer.setShutDownAfterReply(false)
+        tcpEchoServer.start()
     }
 
     // @RepeatedTest(5)
@@ -334,24 +350,44 @@ class TcpHandlingTest {
         val sourcePort1 = Random.nextInt(1024, 65535).toUShort()
         val sourcePort2 = Random.nextInt(1024, 65535).toUShort()
 
-        val client = TcpClient(sourceAddress, destinationAddress, sourcePort1, destinationPort, kAnonProxy, packetDumper, clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234))
-        val client2 = TcpClient(sourceAddress, destinationAddress, sourcePort2, destinationPort, kAnonProxy, packetDumper, clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 4321))
+        val client =
+            TcpClient(
+                sourceAddress,
+                destinationAddress,
+                sourcePort1,
+                destinationPort,
+                kAnonProxy,
+                packetDumper,
+                clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 1234),
+            )
+        val client2 =
+            TcpClient(
+                sourceAddress,
+                destinationAddress,
+                sourcePort2,
+                destinationPort,
+                kAnonProxy,
+                packetDumper,
+                clientAddress = InetSocketAddress(InetAddress.getByName("127.0.0.1"), 4321),
+            )
 
-        val t1 = Thread {
-            client.connect()
-            client.send(ByteBuffer.wrap(payload))
-            val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
-            client.recv(recvBuffer)
-            client.closeClient()
-        }
+        val t1 =
+            Thread {
+                client.connect()
+                client.send(ByteBuffer.wrap(payload))
+                val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+                client.recv(recvBuffer)
+                client.closeClient()
+            }
 
-        val t2 = Thread {
-            client2.connect()
-            client2.send(ByteBuffer.wrap(payload))
-            val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
-            client2.recv(recvBuffer)
-            client2.closeClient()
-        }
+        val t2 =
+            Thread {
+                client2.connect()
+                client2.send(ByteBuffer.wrap(payload))
+                val recvBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+                client2.recv(recvBuffer)
+                client2.closeClient()
+            }
 
         t1.start()
         t2.start()
