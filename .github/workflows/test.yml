@@ -30,6 +30,7 @@ jobs:
         run: ./gradlew clean assemble --no-build-cache
       - name: JVM unit Tests with Coverage Report
         run: ./gradlew check
+        timeout-minutes: 3
       # tar the reports since its much faster uploading multiple files
       - name: Tar Reports
         if: always()

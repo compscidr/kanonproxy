@@ -17,6 +17,7 @@ class BidirectionalByteChannel : ByteChannel {
 
     override fun close() {
         this.isOpen = false
+        readyToRead.value = true
     }
 
     override fun write(src: ByteBuffer): Int {
@@ -35,6 +36,9 @@ class BidirectionalByteChannel : ByteChannel {
                 readyToRead.takeWhile { !it }.collect {}
             }
         }
+        if (!isOpen) {
+            return 0
+        }
         // flip the buffer to get it from write mode to read mode
         buffer.flip()
         val availableBytes = min(buffer.remaining(), dst.remaining())
@@ -47,4 +51,11 @@ class BidirectionalByteChannel : ByteChannel {
         buffer.compact()
         return availableBytes
     }
+
+    fun available(): Int =
+        if (readyToRead.value.not()) {
+            0
+        } else {
+            buffer.position() // because we haven't flipped yet, this will be how many bytes there are to read
+        }
 }

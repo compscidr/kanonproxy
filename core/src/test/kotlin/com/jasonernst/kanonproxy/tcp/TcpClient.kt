@@ -154,7 +154,7 @@ class TcpClient(
     /**
      * Blocks until the three-way handshake completes, or fails
      */
-    fun connect(timeOutMs: Long = 2000) {
+    fun connect(timeOutMs: Long = KAnonProxy.STALE_SESSION_MS + 500L) {
         if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
             throw RuntimeException("Can't connect, current session isn't closed")
         }
@@ -337,6 +337,12 @@ class TcpClient(
 
     override fun toString(): String =
         "TcpClient(sourceAddress='$sourceAddress', destinationAddress='$destinationAddress', sourcePort=$sourcePort, destinationPort=$destinationPort, clientId=$clientId)"
+
+    override fun getKey(): String = getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.TCP.value)
+
+    override fun read() {
+        TODO("Not yet implemented")
+    }
 
     /**
      * In the Tcp Client, this is actually handling packets it got from the proxy

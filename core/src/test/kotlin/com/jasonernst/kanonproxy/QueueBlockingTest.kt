@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy
 
 import com.jasonernst.icmp.linux.IcmpLinux
+import com.jasonernst.kanonproxy.icmp.IcmpHandlingTest.Companion.UNREACHABLE_IPV4
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
@@ -59,7 +60,7 @@ class QueueBlockingTest {
         val tcpSyn = TcpHeader(syn = true)
         val tcpIpHeader =
             Ipv4Header(
-                destinationAddress = InetAddress.getByName("8.8.8.8") as Inet4Address,
+                destinationAddress = InetAddress.getByName(UNREACHABLE_IPV4) as Inet4Address,
                 protocol = IpType.TCP.value,
                 totalLength =
                     (

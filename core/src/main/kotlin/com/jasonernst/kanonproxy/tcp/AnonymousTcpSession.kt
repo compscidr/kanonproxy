@@ -1,22 +1,20 @@
 package com.jasonernst.kanonproxy.tcp
 
-import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
-import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
+import com.jasonernst.kanonproxy.ChangeRequest
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
-import com.jasonernst.knet.network.icmp.IcmpFactory
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
-import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
-import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AnonymousTcpSession(
     initialIpHeader: IpHeader,
@@ -35,13 +33,19 @@ class AnonymousTcpSession(
         sessionManager = sessionManager,
         clientAddress = clientAddress,
     ) {
+    companion object {
+        const val CONNECTION_POLL_MS: Long = 500
+    }
+
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine: TcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.LISTEN), mtu(), this)
 
-    // note: android doesn't suppor the open function with the protocol family, so just open like this and assume
+    // note: android doesn't support the open function with the protocol family, so just open like this and assume
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
     // that will do connect during open.
     override var channel: SocketChannel = SocketChannel.open()
+    var connectTime: Long = 0L
+    val isConnecting = AtomicBoolean(true)
 
     override fun handleReturnTrafficLoop(maxRead: Int): Int {
         val len = super.handleReturnTrafficLoop(maxRead)
@@ -68,79 +72,71 @@ class AnonymousTcpSession(
 
         if (tcpStateMachine.tcpState.value == TcpState.CLOSED) {
             logger.debug("Tcp session is closed, removing from session table, {}", this)
-            super.close(removeSession = true, packet = null)
+            super.close(removeSession = true, packet = null, true)
         }
     }
 
     init {
+        startSelector()
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
         outgoingScope.launch {
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             try {
                 logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
-                channel.socket().keepAlive = false
-                channel.socket().connect(
-                    InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
-                    1000,
-                )
-                logger.debug("TCP connected")
-                startIncomingHandling()
-            } catch (e: Exception) {
-                // this should catch any exceptions trying to make the TCP connection (timeout, not reachable etc.)
-                logger.error("Error creating the TCP session: $e")
-                val code =
-                    when (initialIpHeader.sourceAddress) {
-                        is Inet4Address -> IcmpV4DestinationUnreachableCodes.HOST_UNREACHABLE
-                        else -> IcmpV6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
-                    }
-                val mtu =
-                    if (initialIpHeader.sourceAddress is Inet4Address) {
-                        TcpOptionMaximumSegmentSize.defaultIpv4MSS
-                    } else {
-                        TcpOptionMaximumSegmentSize.defaultIpv6MSS
-                    }
-                val response =
-                    IcmpFactory.createDestinationUnreachable(
-                        code,
-                        // source address for the Icmp header, send it back to the client as if its the clients own OS
-                        // telling it that its unreachable
-                        initialIpHeader.sourceAddress,
-                        Packet(initialIpHeader, initialTransportHeader, initialPayload),
-                        mtu.toInt(),
+                channel.socket().keepAlive = true
+                channel.socket().keepAlive = true
+                channel.socket().soTimeout = 0
+                channel.configureBlocking(false)
+                connectTime = System.currentTimeMillis()
+                val result =
+                    channel.connect(
+                        InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
                     )
-                returnQueue.add(response)
-                // incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
-                close()
-            }
-
-            try {
-                while (channel.isOpen) {
-                    val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
-                    val len =
-                        if (maxRead > 0) {
-                            handleReturnTrafficLoop(maxRead)
-                        } else {
-                            logger.warn("No more space in outgoing buffer, waiting for more space")
-                            0
-                        }
-                    if (len < 0) {
-                        break
+                if (result) {
+                    // this can either be connected immediately, or we'll have to wait for the selector
+                    logger.debug("TCP connected to ${initialIpHeader.destinationAddress}")
+                    synchronized(changeRequests) {
+                        changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
+                    }
+                    startIncomingHandling()
+                } else {
+                    logger.debug("CONNECT called, waiting for selector")
+                    synchronized(changeRequests) {
+                        changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_CONNECT))
                     }
                 }
+                selector.wakeup()
+            } catch (e: Exception) {
+                handleExceptionOnRemoteChannel(e)
+            }
+        }
+    }
+
+    override fun read() {
+        try {
+            val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
+            val len =
+                if (maxRead > 0) {
+                    handleReturnTrafficLoop(maxRead)
+                } else {
+                    logger.warn("No more space in outgoing buffer, waiting for more space")
+                    0
+                }
+            if (len < 0) {
                 logger.warn("Remote Tcp channel closed")
                 val finPacket = teardown(requiresLock = true)
                 if (finPacket != null) {
                     returnQueue.add(finPacket)
                     tcpStateMachine.enqueueRetransmit(finPacket)
                 }
-            } catch (e: Exception) {
-                logger.warn("Remote Tcp channel closed ${e.message}")
-                val finPacket = teardown(requiresLock = true)
-                if (finPacket != null) {
-                    returnQueue.add(finPacket)
-                    tcpStateMachine.enqueueRetransmit(finPacket)
-                }
+            }
+        } catch (e: Exception) {
+            logger.warn("Remote Tcp channel closed ${e.message}")
+            val finPacket = teardown(requiresLock = true)
+            if (finPacket != null) {
+                returnQueue.add(finPacket)
+                tcpStateMachine.enqueueRetransmit(finPacket)
             }
         }
     }
