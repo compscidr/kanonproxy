@@ -83,7 +83,7 @@ class AnonymousTcpSession(
                 channel.socket().keepAlive = false
                 channel.configureBlocking(false)
                 channel.register(selector, SelectionKey.OP_READ or SelectionKey.OP_WRITE)
-                channel.socket().connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
+                channel.connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
                 logger.debug("TCP connected")
                 startIncomingHandling()
             } catch (e: Exception) {

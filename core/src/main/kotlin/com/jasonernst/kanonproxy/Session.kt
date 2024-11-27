@@ -18,10 +18,12 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
+import java.nio.channels.CancelledKeyException
 import java.nio.channels.DatagramChannel
 import java.nio.channels.Selector
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.min
 
 abstract class Session(
@@ -150,24 +152,34 @@ abstract class Session(
         channelScope.launch {
             Thread.currentThread().name = "Channel scope: ${getKey()}"
             while (isRunning.get()) {
-                selector.select()
+                try {
+                    selector.select()
+                } catch (e: Exception) {
+                    logger.warn("Exception on select, probably shutting down: $e")
+                    break
+                }
                 val selectedKeys = selector.selectedKeys()
                 val keyStream = selectedKeys.parallelStream()
-                keyStream.filter { (it.isWritable || it.isReadable) }
-                    .forEach {
-                        if (it.isWritable) {
-                            val available = outgoingToInternet.available()
-                            if (available > 0) {
-                                val buff = ByteBuffer.allocate(available)
-                                outgoingToInternet.read(buff)
-                                buff.flip()
-                                flushToRealChannel(buff)
+                try {
+                    keyStream.filter { (it.isWritable || it.isReadable) && it.isValid }
+                        .forEach {
+                            if (it.isWritable) {
+                                val available = outgoingToInternet.available()
+                                if (available > 0) {
+                                    val buff = ByteBuffer.allocate(available)
+                                    outgoingToInternet.read(buff)
+                                    buff.flip()
+                                    flushToRealChannel(buff)
+                                }
+                            }
+                            if (it.isReadable) {
+                                read()
                             }
                         }
-                        if (it.isReadable) {
-                            read()
-                        }
-                    }
+                } catch (e: CancelledKeyException) {
+                    logger.warn("Canceled key, probably shutting session down")
+                    break
+                }
                 selectedKeys.clear()
             }
         }

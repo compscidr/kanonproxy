@@ -338,6 +338,10 @@ class TcpClient(
     override fun toString(): String =
         "TcpClient(sourceAddress='$sourceAddress', destinationAddress='$destinationAddress', sourcePort=$sourcePort, destinationPort=$destinationPort, clientId=$clientId)"
 
+    override fun read() {
+        TODO("Not yet implemented")
+    }
+
     /**
      * In the Tcp Client, this is actually handling packets it got from the proxy
      */
