@@ -2,7 +2,9 @@ package com.jasonernst.kanonproxy
 
 import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
+import com.jasonernst.kanonproxy.KAnonProxy.Companion.STALE_SESSION_MS
 import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession
+import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession.Companion.CONNECTION_POLL_MS
 import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
@@ -151,9 +153,29 @@ abstract class Session(
                     }
                     logger.warn("Waiting for SELECT")
                     // lock so we don't add or remove from the selector while we're selecting
-                    val numKeys = selector.select()
+                    val session = this@Session
+                    val numKeys =
+                        if (session is AnonymousTcpSession) {
+                            if (session.isConnecting.get()) {
+                                selector.select(CONNECTION_POLL_MS)
+                            } else {
+                                selector.select()
+                            }
+                        } else {
+                            selector.select()
+                        }
                     if (numKeys > 0) {
                         logger.warn("SELECT RETURNED: $numKeys")
+                    } else {
+                        if (session is AnonymousTcpSession && session.isConnecting.get()) {
+                            val currentTime = System.currentTimeMillis()
+                            val difference = currentTime - session.connectTime
+                            if (difference > STALE_SESSION_MS) {
+                                val error = "Timed trying to reach remote out on TCP connect"
+                                logger.error(error)
+                                handleExceptionOnRemoteChannel(Exception(error))
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     logger.warn("Exception on select, probably shutting down: $e")
@@ -167,8 +189,10 @@ abstract class Session(
                     }
                     val keyStream = selectedKeys.parallelStream()
                     keyStream
-                        .filter { it.isWritable || it.isReadable || it.isConnectable }
                         .forEach {
+                            if (!it.isValid) {
+                                logger.error("INVALID KEY!!!!! $this@Session")
+                            }
                             if (it.isWritable && it.isValid) {
                                 val available = outgoingToInternet.available()
                                 if (available > 0) {

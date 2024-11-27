@@ -154,7 +154,7 @@ class TcpClient(
     /**
      * Blocks until the three-way handshake completes, or fails
      */
-    fun connect(timeOutMs: Long = 2000) {
+    fun connect(timeOutMs: Long = KAnonProxy.STALE_SESSION_MS + 500L) {
         if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
             throw RuntimeException("Can't connect, current session isn't closed")
         }

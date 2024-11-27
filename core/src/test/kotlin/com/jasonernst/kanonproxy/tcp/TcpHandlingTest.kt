@@ -262,7 +262,7 @@ class TcpHandlingTest {
         val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
 
         val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
-        assertThrows<SocketException> { tcpClient.connect(2000) }
+        assertThrows<SocketException> { tcpClient.connect() }
         tcpClient.stopClient()
     }
 

@@ -14,6 +14,7 @@ import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AnonymousTcpSession(
     initialIpHeader: IpHeader,
@@ -32,6 +33,10 @@ class AnonymousTcpSession(
         sessionManager = sessionManager,
         clientAddress = clientAddress,
     ) {
+    companion object {
+        const val CONNECTION_POLL_MS: Long = 500
+    }
+
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine: TcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.LISTEN), mtu(), this)
 
@@ -39,6 +44,8 @@ class AnonymousTcpSession(
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
     // that will do connect during open.
     override var channel: SocketChannel = SocketChannel.open()
+    var connectTime: Long = 0L
+    val isConnecting = AtomicBoolean(true)
 
     override fun handleReturnTrafficLoop(maxRead: Int): Int {
         val len = super.handleReturnTrafficLoop(maxRead)
@@ -81,6 +88,7 @@ class AnonymousTcpSession(
                 channel.socket().keepAlive = true
                 channel.socket().soTimeout = 0
                 channel.configureBlocking(false)
+                connectTime = System.currentTimeMillis()
                 val result =
                     channel.connect(
                         InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),

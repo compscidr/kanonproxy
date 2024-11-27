@@ -18,7 +18,7 @@ import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
-import java.nio.channels.SelectionKey
+import java.nio.channels.SelectionKey.OP_READ
 import java.util.concurrent.LinkedBlockingDeque
 
 class UdpSession(
@@ -54,7 +54,7 @@ class UdpSession(
                 logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 protector.protectUDPSocket(channel.socket())
                 channel.configureBlocking(false)
-                channel.register(selector, SelectionKey.OP_READ or SelectionKey.OP_WRITE)
+                channel.register(selector, OP_READ)
                 channel.connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
                 logger.debug("UDP Connected")
                 startIncomingHandling()
@@ -117,8 +117,11 @@ class UdpSession(
     override fun handlePacketFromClient(packet: Packet) {
         val payload = packet.payload
         try {
-            val bytesWrote = channel.write(ByteBuffer.wrap(payload))
-            logger.debug("Wrote {} bytes to session {}", bytesWrote, this)
+            val buffer = ByteBuffer.wrap(payload)
+            while (buffer.hasRemaining()) {
+                outgoingToInternet.write(buffer)
+            }
+            readyToWrite()
         } catch (e: Exception) {
             logger.error("Error writing to UDP channel: $e")
             close()
