@@ -17,6 +17,7 @@ class BidirectionalByteChannel : ByteChannel {
 
     override fun close() {
         this.isOpen = false
+        readyToRead.value = true
     }
 
     override fun write(src: ByteBuffer): Int {
@@ -34,6 +35,9 @@ class BidirectionalByteChannel : ByteChannel {
             runBlocking {
                 readyToRead.takeWhile { !it }.collect {}
             }
+        }
+        if (!isOpen) {
+            return 0
         }
         // flip the buffer to get it from write mode to read mode
         buffer.flip()

@@ -1,18 +1,14 @@
 package com.jasonernst.kanonproxy.udp
 
-import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachableCodes
-import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.kanonproxy.Session
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
-import com.jasonernst.knet.network.icmp.IcmpFactory
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.transport.TransportHeader
-import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
 import com.jasonernst.knet.transport.udp.UdpHeader
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
@@ -52,7 +48,7 @@ class UdpSession(
         }
 
     init {
-        val session = this
+        startSelector()
         outgoingScope.launch {
             try {
                 logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
@@ -63,32 +59,7 @@ class UdpSession(
                 logger.debug("UDP Connected")
                 startIncomingHandling()
             } catch (e: Exception) {
-                logger.error("Error creating UDP session: ${e.message}")
-                val code =
-                    when (initialIpHeader.sourceAddress) {
-                        is Inet4Address -> IcmpV4DestinationUnreachableCodes.HOST_UNREACHABLE
-                        else -> IcmpV6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
-                    }
-                val mtu =
-                    if (initialIpHeader.sourceAddress is Inet4Address) {
-                        TcpOptionMaximumSegmentSize.defaultIpv4MSS
-                    } else {
-                        TcpOptionMaximumSegmentSize.defaultIpv6MSS
-                    }
-                val response =
-                    IcmpFactory.createDestinationUnreachable(
-                        code,
-                        // source address for the Icmp header, send it back to the client as if its the clients own OS
-                        // telling it that its unreachable
-                        initialIpHeader.sourceAddress,
-                        Packet(
-                            initialIpHeader,
-                            initialTransportHeader,
-                            initialPayload,
-                        ),
-                        mtu.toInt(),
-                    )
-                returnQueue.add(response)
+                handleExceptionOnRemoteChannel(e)
             }
         }
     }

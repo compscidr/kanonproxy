@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.nio.ByteBuffer
+import java.util.ArrayList
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.jvm.javaClass
 import kotlin.math.abs
@@ -161,7 +162,7 @@ class TcpStateMachine(
         tcpHeader: TcpHeader,
         payload: ByteArray,
     ): List<Packet> {
-        logger.warn("Packet handling, acquiring lock")
+        // logger.warn("Packet handling, acquiring lock")
         val packets =
             runBlocking {
                 tcbMutex.withLock {
@@ -229,7 +230,7 @@ class TcpStateMachine(
                     }
                 }
             }
-        logger.warn("Packet handling, releasing lock")
+        // logger.warn("Packet handling, releasing lock")
 
         // run this outside of the mutex since it also requires locking
         val encapsulatedPackets = encapsulateOutgoingData(swapSourceDestination, false)
@@ -1805,6 +1806,7 @@ class TcpStateMachine(
                     // can't write directly to the channel because we can deadlock with reads on it.
                     // session.channel.write(buffer)
                 }
+                session.readyToWrite()
             } catch (e: Exception) {
                 logger.warn("Error writing to channel: $e, shutting down session")
                 val finPacket = session.teardown(!swapSourceDestination, requiresLock = false)
