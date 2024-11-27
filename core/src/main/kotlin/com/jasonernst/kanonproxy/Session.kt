@@ -1,7 +1,6 @@
 package com.jasonernst.kanonproxy
 
 import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession
-import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
@@ -19,11 +18,9 @@ import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.nio.channels.CancelledKeyException
-import java.nio.channels.DatagramChannel
 import java.nio.channels.Selector
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.min
 
 abstract class Session(
@@ -161,7 +158,8 @@ abstract class Session(
                 val selectedKeys = selector.selectedKeys()
                 val keyStream = selectedKeys.parallelStream()
                 try {
-                    keyStream.filter { (it.isWritable || it.isReadable) && it.isValid }
+                    keyStream
+                        .filter { (it.isWritable || it.isReadable) && it.isValid }
                         .forEach {
                             if (it.isWritable) {
                                 val available = outgoingToInternet.available()

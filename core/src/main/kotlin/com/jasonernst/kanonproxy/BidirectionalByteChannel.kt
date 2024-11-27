@@ -48,11 +48,10 @@ class BidirectionalByteChannel : ByteChannel {
         return availableBytes
     }
 
-    fun available(): Int {
-        return if (readyToRead.value.not()) {
+    fun available(): Int =
+        if (readyToRead.value.not()) {
             0
         } else {
             buffer.position() // because we haven't flipped yet, this will be how many bytes there are to read
         }
-    }
 }
