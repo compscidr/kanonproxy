@@ -1,5 +1,6 @@
 package com.jasonernst.kanonproxy.tcp
 
+import com.jasonernst.kanonproxy.BidirectionalByteChannel
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
@@ -1802,9 +1803,13 @@ class TcpStateMachine(
             try {
                 val buffer = ByteBuffer.wrap(payload)
                 while (buffer.hasRemaining()) {
-                    session.outgoingToInternet.write(buffer)
-                    // can't write directly to the channel because we can deadlock with reads on it.
-                    // session.channel.write(buffer)
+                    if (session.channel is BidirectionalByteChannel) {
+                        // tcp client case
+                        session.channel.write(buffer)
+                    } else {
+                        // anon proxy case
+                        session.outgoingToInternet.write(buffer)
+                    }
                 }
                 session.readyToWrite()
             } catch (e: Exception) {
