@@ -134,23 +134,7 @@ abstract class Session(
             Thread.currentThread().name = "Channel scope: ${getKey()}"
             while (isRunning.get()) {
                 try {
-                    // Process any pending changes
-                    synchronized(changeRequests) {
-                        for (changeRequest in changeRequests) {
-                            when (changeRequest.type) {
-                                ChangeRequest.REGISTER -> {
-                                    logger.debug("Processing REGISTER")
-                                    changeRequest.channel.register(selector, changeRequest.ops)
-                                }
-                                ChangeRequest.CHANGE_OPS -> {
-                                    logger.debug("Processing CHANGE_OPS")
-                                    val key = changeRequest.channel.keyFor(selector)
-                                    key.interestOps(changeRequest.ops)
-                                }
-                            }
-                        }
-                        changeRequests.clear()
-                    }
+                    ChangeRequest.processPendingChanges(selector, changeRequests)
                     logger.warn("Waiting for SELECT")
                     // lock so we don't add or remove from the selector while we're selecting
                     val session = this@Session

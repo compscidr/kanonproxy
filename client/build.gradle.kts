@@ -23,6 +23,7 @@ application {
 }
 
 dependencies {
+    implementation(project(":core")) // really only for the ChangeRequest class
     implementation(libs.jna)
     implementation(libs.jnr.enxio)
     implementation(libs.knet)
