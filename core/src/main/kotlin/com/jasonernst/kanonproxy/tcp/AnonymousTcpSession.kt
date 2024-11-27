@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import java.util.concurrent.LinkedBlockingDeque
 
@@ -38,7 +39,7 @@ class AnonymousTcpSession(
     private val logger = LoggerFactory.getLogger(javaClass)
     override val tcpStateMachine: TcpStateMachine = TcpStateMachine(MutableStateFlow(TcpState.LISTEN), mtu(), this)
 
-    // note: android doesn't suppor the open function with the protocol family, so just open like this and assume
+    // note: android doesn't support the open function with the protocol family, so just open like this and assume
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
     // that will do connect during open.
     override var channel: SocketChannel = SocketChannel.open()
@@ -80,10 +81,9 @@ class AnonymousTcpSession(
             try {
                 logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 channel.socket().keepAlive = false
-                channel.socket().connect(
-                    InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
-                    1000,
-                )
+                channel.configureBlocking(false)
+                channel.register(selector, SelectionKey.OP_READ or SelectionKey.OP_WRITE)
+                channel.socket().connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
                 logger.debug("TCP connected")
                 startIncomingHandling()
             } catch (e: Exception) {
@@ -113,34 +113,33 @@ class AnonymousTcpSession(
                 // incomingQueue.clear() // prevent us from handling any incoming packets because we can't send them anywhere
                 close()
             }
+        }
+    }
 
-            try {
-                while (channel.isOpen) {
-                    val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
-                    val len =
-                        if (maxRead > 0) {
-                            handleReturnTrafficLoop(maxRead)
-                        } else {
-                            logger.warn("No more space in outgoing buffer, waiting for more space")
-                            0
-                        }
-                    if (len < 0) {
-                        break
-                    }
+    override fun read() {
+        try {
+            val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
+            val len =
+                if (maxRead > 0) {
+                    handleReturnTrafficLoop(maxRead)
+                } else {
+                    logger.warn("No more space in outgoing buffer, waiting for more space")
+                    0
                 }
+            if (len < 0) {
                 logger.warn("Remote Tcp channel closed")
                 val finPacket = teardown(requiresLock = true)
                 if (finPacket != null) {
                     returnQueue.add(finPacket)
                     tcpStateMachine.enqueueRetransmit(finPacket)
                 }
-            } catch (e: Exception) {
-                logger.warn("Remote Tcp channel closed ${e.message}")
-                val finPacket = teardown(requiresLock = true)
-                if (finPacket != null) {
-                    returnQueue.add(finPacket)
-                    tcpStateMachine.enqueueRetransmit(finPacket)
-                }
+            }
+        } catch (e: Exception) {
+            logger.warn("Remote Tcp channel closed ${e.message}")
+            val finPacket = teardown(requiresLock = true)
+            if (finPacket != null) {
+                returnQueue.add(finPacket)
+                tcpStateMachine.enqueueRetransmit(finPacket)
             }
         }
     }

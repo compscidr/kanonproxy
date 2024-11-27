@@ -1801,7 +1801,9 @@ class TcpStateMachine(
             try {
                 val buffer = ByteBuffer.wrap(payload)
                 while (buffer.hasRemaining()) {
-                    session.channel.write(buffer)
+                    session.outgoingToInternet.write(buffer)
+                    // can't write directly to the channel because we can deadlock with reads on it.
+                    // session.channel.write(buffer)
                 }
             } catch (e: Exception) {
                 logger.warn("Error writing to channel: $e, shutting down session")

@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy
 
 import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession
+import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
@@ -17,6 +18,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
+import java.nio.channels.DatagramChannel
+import java.nio.channels.Selector
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
@@ -31,7 +34,9 @@ abstract class Session(
     val clientAddress: InetSocketAddress,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    val selector = Selector.open()
     abstract val channel: ByteChannel
+    val outgoingToInternet = BidirectionalByteChannel()
     protected val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
     var lastHeard = System.currentTimeMillis()
     private val outgoingJob = SupervisorJob() // https://stackoverflow.com/a/63407811
@@ -41,6 +46,9 @@ abstract class Session(
     private val incomingJob = SupervisorJob()
     private val incomingScope = CoroutineScope(Dispatchers.IO + incomingJob)
     private val isRunning = AtomicBoolean(false)
+
+    private val channelJob = SupervisorJob()
+    private val channelScope = CoroutineScope(Dispatchers.IO + channelJob)
 
     companion object {
         fun getKey(
@@ -113,6 +121,8 @@ abstract class Session(
         return len
     }
 
+    abstract fun read()
+
     /**
      * Should be called after the connection to the remote side is established. This will start the loop that reads
      * from the incoming queue and handles each packet. Until this point, packets will just build up here. This is to
@@ -136,6 +146,31 @@ abstract class Session(
                 handlePacketFromClient(packet)
             }
         }
+
+        channelScope.launch {
+            Thread.currentThread().name = "Channel scope: ${getKey()}"
+            while (isRunning.get()) {
+                selector.select()
+                val selectedKeys = selector.selectedKeys()
+                val keyStream = selectedKeys.parallelStream()
+                keyStream.filter { (it.isWritable || it.isReadable) }
+                    .forEach {
+                        if (it.isWritable) {
+                            val available = outgoingToInternet.available()
+                            if (available > 0) {
+                                val buff = ByteBuffer.allocate(available)
+                                outgoingToInternet.read(buff)
+                                buff.flip()
+                                flushToRealChannel(buff)
+                            }
+                        }
+                        if (it.isReadable) {
+                            read()
+                        }
+                    }
+                selectedKeys.clear()
+            }
+        }
     }
 
     abstract fun handlePayloadFromInternet(payload: ByteArray)
@@ -152,6 +187,15 @@ abstract class Session(
     open fun getDestinationPort(): UShort = initialTransportHeader?.destinationPort ?: throw IllegalArgumentException("No destination port")
 
     open fun getProtocol(): UByte = initialIpHeader?.protocol ?: throw IllegalArgumentException("No protocol")
+
+    /**
+     * This should only be called when the selector says we can write to the real channel
+     */
+    private fun flushToRealChannel(buffer: ByteBuffer) {
+        while (buffer.hasRemaining()) {
+            channel.write(buffer)
+        }
+    }
 
     open fun close(
         removeSession: Boolean = true,

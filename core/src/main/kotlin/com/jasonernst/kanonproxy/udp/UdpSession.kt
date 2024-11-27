@@ -22,6 +22,7 @@ import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
+import java.nio.channels.SelectionKey
 import java.util.concurrent.LinkedBlockingDeque
 
 class UdpSession(
@@ -56,6 +57,8 @@ class UdpSession(
             try {
                 logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 protector.protectUDPSocket(channel.socket())
+                channel.configureBlocking(false)
+                channel.register(selector, SelectionKey.OP_READ or SelectionKey.OP_WRITE)
                 channel.connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
                 logger.debug("UDP Connected")
                 startIncomingHandling()
@@ -87,16 +90,21 @@ class UdpSession(
                     )
                 returnQueue.add(response)
             }
+        }
+    }
 
-            try {
-                logger.debug("UDP session listening for remote responses")
-                do {
-                    val len = handleReturnTrafficLoop(readBuffer.capacity())
-                } while (channel.isOpen && len > -1)
-            } catch (e: Exception) {
-                logger.warn("Remote Udp channel closed")
+    override fun read() {
+        var closed = false
+        try {
+            val len = handleReturnTrafficLoop(readBuffer.capacity())
+            if (len < 0) {
+                closed = true
             }
-            logger.debug("UDP session no longer listening for remote responses")
+        } catch (e: Exception) {
+            closed = true
+        }
+        if (closed) {
+            logger.warn("Remote Udp channel closed")
         }
     }
 
