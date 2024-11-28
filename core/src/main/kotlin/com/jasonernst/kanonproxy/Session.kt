@@ -31,7 +31,7 @@ import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import java.nio.channels.spi.AbstractSelectableChannel
-import java.util.LinkedList
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
@@ -62,7 +62,7 @@ abstract class Session(
     private val channelScope = CoroutineScope(Dispatchers.IO + channelJob)
 
     val selector: Selector = Selector.open()
-    val changeRequests = LinkedList<ChangeRequest>()
+    val changeRequests = ConcurrentLinkedQueue<ChangeRequest>()
 
     companion object {
         fun getKey(
@@ -123,9 +123,7 @@ abstract class Session(
         if (channel is BidirectionalByteChannel) {
             return
         }
-        synchronized(changeRequests) {
-            changeRequests.add(ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE))
-        }
+        changeRequests.add(ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE))
         selector.wakeup()
     }
 

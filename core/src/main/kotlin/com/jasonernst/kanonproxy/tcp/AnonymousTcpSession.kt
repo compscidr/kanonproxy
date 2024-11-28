@@ -96,15 +96,11 @@ class AnonymousTcpSession(
                 if (result) {
                     // this can either be connected immediately, or we'll have to wait for the selector
                     logger.debug("TCP connected to ${initialIpHeader.destinationAddress}")
-                    synchronized(changeRequests) {
-                        changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
-                    }
+                    changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
                     startIncomingHandling()
                 } else {
                     logger.debug("CONNECT called, waiting for selector")
-                    synchronized(changeRequests) {
-                        changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_CONNECT))
-                    }
+                    changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_CONNECT))
                 }
                 selector.wakeup()
             } catch (e: Exception) {

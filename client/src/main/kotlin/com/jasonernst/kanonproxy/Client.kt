@@ -12,14 +12,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.CancelledKeyException
 import java.nio.channels.ClosedSelectorException
 import java.nio.channels.DatagramChannel
-import java.nio.channels.SelectionKey
 import java.nio.channels.SelectionKey.OP_READ
 import java.nio.channels.SelectionKey.OP_WRITE
 import java.nio.channels.Selector
@@ -40,8 +37,8 @@ class Client(
     private val readFromTunJob = SupervisorJob()
     private val readFromTunJobScope = CoroutineScope(Dispatchers.IO + readFromTunJob)
 
-    private val outgoingPacket = ConcurrentLinkedQueue<Packet>()
-    private val changeRequests = LinkedList<ChangeRequest>()
+    private val outgoingPackets = ConcurrentLinkedQueue<Packet>()
+    private val changeRequests = ConcurrentLinkedQueue<ChangeRequest>()
     private val selector = Selector.open()
     private val readWriteJob = SupervisorJob()
     private val readWriteJobScope = CoroutineScope(Dispatchers.IO + readWriteJob)
@@ -130,15 +127,13 @@ class Client(
                                 }
                             }
                         } else if (it.isWritable) {
-                            while (outgoingPacket.isNotEmpty()) {
-                                val packet = outgoingPacket.remove()
+                            while (outgoingPackets.isNotEmpty()) {
+                                val packet = outgoingPackets.remove()
                                 val sendBuffer = ByteBuffer.wrap(packet.toByteArray())
                                 datagramChannel.send(sendBuffer, socketAddress)
                                 packetDumper.dumpBuffer(sendBuffer, etherType = EtherType.DETECT)
                             }
-                            synchronized(changeRequests) {
-                                changeRequests.add(ChangeRequest(channel, CHANGE_OPS, OP_READ))
-                            }
+                            changeRequests.add(ChangeRequest(channel, CHANGE_OPS, OP_READ))
                             selector.wakeup()
                         }
                     }
@@ -172,11 +167,9 @@ class Client(
                 // logger.debug("After flip: position: {} remaining {}", stream.position(), stream.remaining())
                 val packets = parseStream(stream)
                 // logger.debug("After parse: position: {} remaining {}", stream.position(), stream.remaining())
-                outgoingPacket.addAll(packets)
-                logger.debug("Added ${packets.size} packets to outgoing queue, total: ${outgoingPacket.size}")
-                synchronized(changeRequests) {
-                    changeRequests.add(ChangeRequest(channel, CHANGE_OPS, OP_WRITE))
-                }
+                outgoingPackets.addAll(packets)
+                logger.debug("Added ${packets.size} packets to outgoing queue, total: ${outgoingPackets.size}")
+                changeRequests.add(ChangeRequest(channel, CHANGE_OPS, OP_WRITE))
                 selector.wakeup()
             }
         }

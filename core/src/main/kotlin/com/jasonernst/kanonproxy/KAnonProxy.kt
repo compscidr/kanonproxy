@@ -60,6 +60,8 @@ class KAnonProxy(
 
     companion object {
         const val STALE_SESSION_MS = 5000L
+        const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
+        const val MAX_RECEIVE_BUFFER_SIZE = 1500 // max amount we can recv in one read (should be the MTU or bigger probably)
     }
 
     fun start() {
