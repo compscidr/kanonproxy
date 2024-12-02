@@ -72,6 +72,10 @@ abstract class TcpSession(
         swapSourceAndDestination: Boolean = true,
         requiresLock: Boolean,
     ): Packet? {
+        if (tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+            // prevent going into all this if we're already closed
+            return null
+        }
         val packet =
             runBlocking {
                 if (requiresLock) {
