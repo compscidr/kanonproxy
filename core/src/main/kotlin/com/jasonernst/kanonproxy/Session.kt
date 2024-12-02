@@ -27,6 +27,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.nio.channels.CancelledKeyException
 import java.nio.channels.ClosedSelectorException
+import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
@@ -211,6 +212,9 @@ abstract class Session(
                                 }
                             }
                             if (it.isConnectable) {
+                                if (it.channel() is DatagramChannel) {
+                                    logger.warn("IN CONNECTABLE AS DATAGRAM CHANNEL")
+                                }
                                 val socketChannel = it.channel() as SocketChannel
                                 // logger.debug("Tcp connectable, trying to finish connection to ${socketChannel.remoteAddress}")
                                 if (socketChannel.isConnectionPending) {
@@ -226,6 +230,7 @@ abstract class Session(
                                         }
                                     } catch (e: Exception) {
                                         handleExceptionOnRemoteChannel(e)
+                                        selector.close()
                                     }
                                 }
                             }
