@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class Server(
     private val port: Int = 8080,
-) {
+) : ProxySessionManager {
     private lateinit var socket: DatagramSocket
     private val isRunning = AtomicBoolean(false)
     private val kAnonProxy = KAnonProxy(IcmpLinux)
@@ -78,11 +78,15 @@ class Server(
             val clientAddress = InetSocketAddress(packet.address, packet.port)
             kAnonProxy.handlePackets(packets, clientAddress)
             sessions.getOrPut(clientAddress) {
-                val session = ProxySession(clientAddress, kAnonProxy, socket)
+                val session = ProxySession(clientAddress, kAnonProxy, socket, this)
                 session.start()
                 session
             }
         }
+    }
+
+    override fun removeSession(clientAddress: InetSocketAddress) {
+        sessions.remove(clientAddress)
     }
 
     fun stop() {

@@ -139,11 +139,11 @@ abstract class Session(
                         for (changeRequest in changeRequests) {
                             when (changeRequest.type) {
                                 ChangeRequest.REGISTER -> {
-                                    logger.debug("Processing REGISTER")
+                                    // logger.debug("Processing REGISTER")
                                     changeRequest.channel.register(selector, changeRequest.ops)
                                 }
                                 ChangeRequest.CHANGE_OPS -> {
-                                    logger.debug("Processing CHANGE_OPS")
+                                    // logger.debug("Processing CHANGE_OPS")
                                     val key = changeRequest.channel.keyFor(selector)
                                     key.interestOps(changeRequest.ops)
                                 }
@@ -151,7 +151,7 @@ abstract class Session(
                         }
                         changeRequests.clear()
                     }
-                    logger.warn("Waiting for SELECT")
+                    // logger.warn("Waiting for SELECT")
                     // lock so we don't add or remove from the selector while we're selecting
                     val session = this@Session
                     val numKeys =
@@ -165,7 +165,7 @@ abstract class Session(
                             selector.select()
                         }
                     if (numKeys > 0) {
-                        logger.warn("SELECT RETURNED: $numKeys")
+                        // logger.warn("SELECT RETURNED: $numKeys")
                     } else {
                         if (session is AnonymousTcpSession && session.isConnecting.get()) {
                             val currentTime = System.currentTimeMillis()
@@ -185,7 +185,7 @@ abstract class Session(
                 try {
                     val selectedKeys = selector.selectedKeys()
                     if (selectedKeys.size > 0) {
-                        logger.warn("SELECT: $selectedKeys")
+                        // logger.warn("SELECT: $selectedKeys")
                     }
                     val keyStream = selectedKeys.parallelStream()
                     keyStream
@@ -208,7 +208,7 @@ abstract class Session(
                             }
                             if (it.isConnectable) {
                                 val socketChannel = it.channel() as SocketChannel
-                                logger.debug("Tcp connectable, trying to finish connection to ${socketChannel.remoteAddress}")
+                                // logger.debug("Tcp connectable, trying to finish connection to ${socketChannel.remoteAddress}")
                                 if (socketChannel.isConnectionPending) {
                                     try {
                                         val result = socketChannel.finishConnect()
