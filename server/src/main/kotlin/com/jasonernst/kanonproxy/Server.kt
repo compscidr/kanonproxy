@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class Server(
     private val port: Int = 8080,
-): ProxySessionManager {
+) : ProxySessionManager {
     private lateinit var socket: DatagramSocket
     private val isRunning = AtomicBoolean(false)
     private val kAnonProxy = KAnonProxy(IcmpLinux)
