@@ -171,9 +171,11 @@ abstract class Session(
                             val currentTime = System.currentTimeMillis()
                             val difference = currentTime - session.connectTime
                             if (difference > STALE_SESSION_MS) {
-                                val error = "Timed trying to reach remote out on TCP connect"
+                                val error = "Timed out trying to reach remote on TCP connect"
                                 logger.error(error)
                                 handleExceptionOnRemoteChannel(Exception(error))
+                                selector.close()
+                                break
                             }
                         }
                     }
