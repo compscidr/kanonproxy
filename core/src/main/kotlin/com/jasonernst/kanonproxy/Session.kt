@@ -19,6 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.selects.select
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -208,7 +209,8 @@ abstract class Session(
                             }
                             if (it.isReadable && it.isValid) {
                                 if (!read()) {
-                                    it.interestOps(SelectionKey.OP_READ.inv())
+                                    it.interestOps(0)
+                                    selector.close()
                                 }
                             }
                             if (it.isConnectable) {
