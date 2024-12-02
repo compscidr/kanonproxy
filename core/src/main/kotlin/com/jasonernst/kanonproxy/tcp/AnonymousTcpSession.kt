@@ -113,7 +113,7 @@ class AnonymousTcpSession(
         }
     }
 
-    override fun read() {
+    override fun read(): Boolean {
         try {
             val maxRead = tcpStateMachine.availableOutgoingBufferSpace()
             val len =
@@ -130,6 +130,7 @@ class AnonymousTcpSession(
                     returnQueue.add(finPacket)
                     tcpStateMachine.enqueueRetransmit(finPacket)
                 }
+                return false
             }
         } catch (e: Exception) {
             logger.warn("Remote Tcp channel closed ${e.message}")
@@ -138,6 +139,8 @@ class AnonymousTcpSession(
                 returnQueue.add(finPacket)
                 tcpStateMachine.enqueueRetransmit(finPacket)
             }
+            return false
         }
+        return true
     }
 }

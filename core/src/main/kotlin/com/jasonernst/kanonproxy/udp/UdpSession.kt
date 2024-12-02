@@ -64,7 +64,7 @@ class UdpSession(
         }
     }
 
-    override fun read() {
+    override fun read(): Boolean {
         var closed = false
         try {
             val len = handleReturnTrafficLoop(readBuffer.capacity())
@@ -76,7 +76,9 @@ class UdpSession(
         }
         if (closed) {
             logger.warn("Remote Udp channel closed")
+            return false
         }
+        return true
     }
 
     override fun handlePayloadFromInternet(payload: ByteArray) {

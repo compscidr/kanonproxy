@@ -351,7 +351,7 @@ class TcpClient(
 
     override fun getKey(): String = getKey(sourceAddress, sourcePort, destinationAddress, destinationPort, IpType.TCP.value)
 
-    override fun read() {
+    override fun read(): Boolean {
         TODO("Not yet implemented")
     }
 
