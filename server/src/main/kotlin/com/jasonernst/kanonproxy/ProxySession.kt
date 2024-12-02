@@ -17,6 +17,7 @@ class ProxySession(
     private val clientAddress: InetSocketAddress,
     private val kAnonProxy: KAnonProxy,
     private val socket: DatagramSocket,
+    private val sessionManager: ProxySessionManager,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val readFromProxyJob = SupervisorJob()
@@ -47,6 +48,7 @@ class ProxySession(
             val datagramPacket = DatagramPacket(buffer, buffer.size, clientAddress)
             socket.send(datagramPacket)
         }
+        sessionManager.removeSession(clientAddress)
     }
 
     fun stop() {
