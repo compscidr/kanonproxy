@@ -272,6 +272,13 @@ class TcpClient(
         waitForTimeWait: Boolean = false,
         timeOutMs: Long = 2000,
     ) {
+        if (tcpStateMachine.tcpState.value == TcpState.CLOSED ||
+            (tcpStateMachine.tcpState.value == TcpState.TIME_WAIT && !waitForTimeWait)
+        ) {
+            logger.debug("Already closed, state: ${tcpStateMachine.tcpState.value}")
+            cleanup(false)
+            return
+        }
         // send the FIN
         val finPacket = super.teardown(false, true)
         if (finPacket != null) {
@@ -311,6 +318,19 @@ class TcpClient(
         }
         // give a little extra time for the ACK for the FIN to from the other side to be enqueued and sent out
         Thread.sleep(100)
+        cleanup(waitForTimeWait)
+        if (waitForTimeWait) {
+            if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
+                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
+            }
+        } else {
+            if (tcpStateMachine.tcpState.value != TcpState.TIME_WAIT && tcpStateMachine.tcpState.value != TcpState.CLOSED) {
+                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
+            }
+        }
+    }
+
+    private fun cleanup(waitForTimeWait: Boolean) {
         val session = this
         runBlocking {
             isRunning.set(false)
@@ -323,15 +343,6 @@ class TcpClient(
             logger.debug("Waiting for writejob to finish")
             writeJob.cancelAndJoin()
             logger.debug("Jobs finished")
-        }
-        if (waitForTimeWait) {
-            if (tcpStateMachine.tcpState.value != TcpState.CLOSED) {
-                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
-            }
-        } else {
-            if (tcpStateMachine.tcpState.value != TcpState.TIME_WAIT && tcpStateMachine.tcpState.value != TcpState.CLOSED) {
-                throw RuntimeException("Failed to close, state: ${tcpStateMachine.tcpState.value}")
-            }
         }
     }
 
