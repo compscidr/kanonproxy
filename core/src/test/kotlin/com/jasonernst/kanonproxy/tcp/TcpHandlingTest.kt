@@ -43,8 +43,8 @@ class TcpHandlingTest {
         fun setup() {
             tcpEchoServer.start()
             packetDumper.start()
-            staticLogger.debug("Delaying to connect to wireshark")
-            Thread.sleep(5000)
+            // staticLogger.debug("Delaying to connect to wireshark")
+            // Thread.sleep(5000)
         }
 
         @JvmStatic
