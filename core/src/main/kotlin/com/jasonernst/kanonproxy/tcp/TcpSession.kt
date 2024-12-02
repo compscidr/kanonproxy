@@ -72,12 +72,16 @@ abstract class TcpSession(
         swapSourceAndDestination: Boolean = true,
         requiresLock: Boolean,
     ): Packet? {
+        if (tcpStateMachine.tcpState.value == TcpState.CLOSED || tcpStateMachine.tcpState.value == TcpState.TIME_WAIT) {
+            // prevent going into all this if we're already closed
+            return null
+        }
         val packet =
             runBlocking {
                 if (requiresLock) {
-                    logger.warn("TCP TEARDOWN CALLED, WAITING FOR LOCK")
+                    // logger.warn("TCP TEARDOWN CALLED, WAITING FOR LOCK")
                     tcpStateMachine.tcbMutex.lock()
-                    logger.warn("TCP TEARDOWN LOCK ACQUIRED")
+                    // logger.warn("TCP TEARDOWN LOCK ACQUIRED")
                 }
 
                 logger.debug(
@@ -89,7 +93,7 @@ abstract class TcpSession(
                     tearDownPending.set(true)
                     return@runBlocking null
                 } else {
-                    logger.debug("No outgoing bytes to send, proceeding with TEARDOWN")
+                    // logger.debug("No outgoing bytes to send, proceeding with TEARDOWN")
                 }
 
                 if (tcpStateMachine.transmissionControlBlock == null) {
@@ -154,7 +158,7 @@ abstract class TcpSession(
             }
         if (requiresLock) {
             tcpStateMachine.tcbMutex.unlock()
-            logger.warn("TCP TEARDOWN LOCK RELEASED")
+            // logger.warn("TCP TEARDOWN LOCK RELEASED")
         }
         return packet
     }
