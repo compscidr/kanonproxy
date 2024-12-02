@@ -19,7 +19,6 @@ import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
-import java.nio.channels.SelectionKey
 import java.nio.channels.SelectionKey.OP_READ
 import java.util.concurrent.LinkedBlockingDeque
 
