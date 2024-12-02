@@ -85,7 +85,6 @@ class AnonymousTcpSession(
             try {
                 logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 channel.socket().keepAlive = true
-                channel.socket().keepAlive = true
                 channel.socket().soTimeout = 0
                 channel.configureBlocking(false)
                 connectTime = System.currentTimeMillis()

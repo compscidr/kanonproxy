@@ -1,5 +1,6 @@
 package com.jasonernst.kanonproxy.udp
 
+import com.jasonernst.kanonproxy.ChangeRequest
 import com.jasonernst.kanonproxy.Session
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.VpnProtector
@@ -18,6 +19,7 @@ import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
+import java.nio.channels.SelectionKey
 import java.nio.channels.SelectionKey.OP_READ
 import java.util.concurrent.LinkedBlockingDeque
 
@@ -53,12 +55,16 @@ class UdpSession(
             try {
                 logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 protector.protectUDPSocket(channel.socket())
+                channel.socket().soTimeout = 0
                 channel.configureBlocking(false)
-                channel.register(selector, OP_READ)
                 channel.connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
                 logger.debug("UDP Connected")
+                synchronized(changeRequests) {
+                    changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, OP_READ))
+                }
                 startIncomingHandling()
             } catch (e: Exception) {
+                logger.error("ERROR ON UDP CONNECT $e")
                 handleExceptionOnRemoteChannel(e)
             }
         }
