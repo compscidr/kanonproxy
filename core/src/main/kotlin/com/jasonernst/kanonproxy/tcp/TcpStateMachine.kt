@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.BidirectionalByteChannel
+import com.jasonernst.kanonproxy.ChangeRequest
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
@@ -23,6 +24,9 @@ import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.nio.ByteBuffer
+import java.nio.channels.DatagramChannel
+import java.nio.channels.SelectionKey.OP_READ
+import java.nio.channels.SocketChannel
 import java.util.ArrayList
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.jvm.javaClass
@@ -2041,6 +2045,31 @@ class TcpStateMachine(
                     if (requiresLock) {
                         tcbMutex.unlock()
                         logger.warn("ENCAP PACKETS LOCK RELEASED")
+                    }
+
+                    if (outgoingBuffer.remaining() > 0) {
+                        // let the channel know we're ready to read again
+                        if (session.channel is SocketChannel) {
+                            synchronized(session.changeRequests) {
+                                session.changeRequests.add(
+                                    ChangeRequest(
+                                        session.channel as SocketChannel,
+                                        ChangeRequest.CHANGE_OPS,
+                                        OP_READ,
+                                    ),
+                                )
+                            }
+                        } else if (session.channel is DatagramChannel) {
+                            synchronized(session.changeRequests) {
+                                session.changeRequests.add(
+                                    ChangeRequest(
+                                        session.channel as DatagramChannel,
+                                        ChangeRequest.CHANGE_OPS,
+                                        OP_READ,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
                 if (packets.isNotEmpty()) {

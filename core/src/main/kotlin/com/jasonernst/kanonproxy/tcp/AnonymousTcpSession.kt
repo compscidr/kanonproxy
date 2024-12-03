@@ -120,6 +120,7 @@ class AnonymousTcpSession(
                     handleReturnTrafficLoop(maxRead)
                 } else {
                     logger.warn("No more space in outgoing buffer, waiting for more space")
+                    changeRequests.add(ChangeRequest(channel, ChangeRequest.CHANGE_OPS, 0))
                     0
                 }
             if (len < 0) {
