@@ -244,9 +244,14 @@ class TcpClient(
     fun recv(buffer: ByteBuffer) {
         logger.debug("Waiting for up to ${buffer.remaining()} bytes")
         while (buffer.hasRemaining()) {
-            val byteRead = channel.read(buffer)
-            logger.debug("READ: $byteRead")
-            if (isPsh.get()) {
+            val bytesRead = channel.read(buffer)
+            if (bytesRead > 0) {
+                logger.debug("READ: $bytesRead")
+            }
+            if (isPsh.get() && buffer.position() == 0) {
+                logger.warn("PSH received but haven't received any data yet, still waiting")
+            }
+            if (isPsh.get() && buffer.position() > 0) {
                 isPsh.set(false)
                 logger.debug("PSH received, returning from read before buffer full")
                 break
