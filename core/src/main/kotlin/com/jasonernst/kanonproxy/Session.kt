@@ -239,7 +239,7 @@ abstract class Session(
                                             } else {
                                                 it.interestOps(SelectionKey.OP_READ)
                                             }
-                                            //startIncomingHandling()
+                                            // startIncomingHandling()
                                         } else {
                                             logger.debug("Finishing connection, still in progress")
                                             // will retry again when the selector wakes up
@@ -380,8 +380,7 @@ abstract class Session(
         }
         try {
             selector.close()
-
-        } catch(e: Exception) {
+        } catch (e: Exception) {
             logger.error("Failed to close selector", e)
         }
         incomingQueue.add(SentinelPacket)

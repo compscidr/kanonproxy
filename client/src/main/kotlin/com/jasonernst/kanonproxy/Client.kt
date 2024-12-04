@@ -102,7 +102,7 @@ class Client(
                     logger.debug("Sentinel packet, skip")
                     continue
                 }
-                logger.debug("From proxy: ${packet}")
+                logger.debug("From proxy: $packet")
                 tunTapDevice.write(ByteBuffer.wrap(packet.toByteArray()))
                 packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = EtherType.DETECT)
             }
@@ -132,14 +132,14 @@ class Client(
             }
             if (bytesRead > 0) {
                 stream.put(readBuffer, 0, bytesRead)
-                //logger.debug("Read {} bytes from OS. position: {} remaining {}", bytesRead, stream.position(), stream.remaining())
+                // logger.debug("Read {} bytes from OS. position: {} remaining {}", bytesRead, stream.position(), stream.remaining())
                 stream.flip()
-                //logger.debug("After flip: position: {} remaining {}", stream.position(), stream.remaining())
+                // logger.debug("After flip: position: {} remaining {}", stream.position(), stream.remaining())
                 val packets = parseStream(stream)
                 for (packet in packets) {
-                    logger.debug("To proxy: ${packet}")
+                    logger.debug("To proxy: $packet")
                 }
-                //logger.debug("After parse: position: {} remaining {}", stream.position(), stream.remaining())
+                // logger.debug("After parse: position: {} remaining {}", stream.position(), stream.remaining())
                 writePackets(packets)
             }
         }

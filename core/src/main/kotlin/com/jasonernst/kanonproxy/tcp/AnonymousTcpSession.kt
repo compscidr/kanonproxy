@@ -102,7 +102,9 @@ class AnonymousTcpSession(
                     if (outgoingQueue.isNotEmpty()) {
                         logger.debug("Adding CHANGE request to write")
                         synchronized(changeRequests) {
-                            changeRequests.add(ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE))
+                            changeRequests.add(
+                                ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE),
+                            )
                         }
                     } else {
                         logger.debug("Adding CHANGE request to read")

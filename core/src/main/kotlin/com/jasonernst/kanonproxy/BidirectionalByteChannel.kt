@@ -5,12 +5,12 @@ import java.nio.channels.ByteChannel
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
-class BidirectionalByteChannel(private var buffer: ByteBuffer = ByteBuffer.allocate(1024)) : ByteChannel {
+class BidirectionalByteChannel(
+    private var buffer: ByteBuffer = ByteBuffer.allocate(1024),
+) : ByteChannel {
     private val lock = ReentrantLock()
 
-    override fun isOpen(): Boolean {
-        return true
-    }
+    override fun isOpen(): Boolean = true
 
     override fun close() {
         // No resources to free in this simple implementation
@@ -58,18 +58,16 @@ class BidirectionalByteChannel(private var buffer: ByteBuffer = ByteBuffer.alloc
         }
     }
 
-    fun available(): Int {
-        return lock.withLock {
+    fun available(): Int =
+        lock.withLock {
             buffer.remaining()
         }
-    }
 
-    fun getBuffer(): ByteBuffer {
-        return lock.withLock {
+    fun getBuffer(): ByteBuffer =
+        lock.withLock {
             // Return a copy of the current buffer state
             buffer.asReadOnlyBuffer()
         }
-    }
 
     fun resetBuffer() {
         lock.withLock {
@@ -77,5 +75,4 @@ class BidirectionalByteChannel(private var buffer: ByteBuffer = ByteBuffer.alloc
             buffer.clear()
         }
     }
-
 }
