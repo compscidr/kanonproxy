@@ -13,8 +13,8 @@ import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
+import java.nio.channels.spi.AbstractSelectableChannel
 import java.util.concurrent.LinkedBlockingDeque
-import java.util.concurrent.atomic.AtomicBoolean
 
 class AnonymousTcpSession(
     initialIpHeader: IpHeader,
@@ -45,7 +45,6 @@ class AnonymousTcpSession(
     // that will do connect during open.
     override var channel: SocketChannel = SocketChannel.open()
     var connectTime: Long = 0L
-    val isConnecting = AtomicBoolean(true)
 
     override fun handleReturnTrafficLoop(maxRead: Int): Int {
         val len = super.handleReturnTrafficLoop(maxRead)
@@ -81,11 +80,13 @@ class AnonymousTcpSession(
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
         outgoingScope.launch {
+            startIncomingHandling()
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             try {
                 logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
-                channel.socket().keepAlive = true
-                channel.socket().soTimeout = 0
+                // channel.socket().keepAlive = false
+                // channel.socket().soTimeout = 0
+                channel.socket().reuseAddress = true
                 channel.configureBlocking(false)
                 connectTime = System.currentTimeMillis()
                 val result =
@@ -95,12 +96,25 @@ class AnonymousTcpSession(
                 if (result) {
                     // this can either be connected immediately, or we'll have to wait for the selector
                     logger.debug("TCP connected to ${initialIpHeader.destinationAddress}")
-                    synchronized(changeRequests) {
-                        changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
+                    isConnecting.set(false)
+
+                    // we may have got data while waiting to connect
+                    if (outgoingQueue.isNotEmpty()) {
+                        logger.debug("Adding CHANGE request to write")
+                        synchronized(changeRequests) {
+                            changeRequests.add(
+                                ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE),
+                            )
+                        }
+                    } else {
+                        logger.debug("Adding CHANGE request to read")
+                        synchronized(changeRequests) {
+                            changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
+                        }
                     }
-                    startIncomingHandling()
                 } else {
                     logger.debug("CONNECT called, waiting for selector")
+                    logger.debug("Adding CHANGE request to CONNECT")
                     synchronized(changeRequests) {
                         changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_CONNECT))
                     }
@@ -120,6 +134,7 @@ class AnonymousTcpSession(
                     handleReturnTrafficLoop(maxRead)
                 } else {
                     logger.warn("No more space in outgoing buffer, waiting for more space")
+                    logger.debug("Adding request to clear interest ops")
                     changeRequests.add(ChangeRequest(channel, ChangeRequest.CHANGE_OPS, 0))
                     0
                 }

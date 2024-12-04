@@ -5,6 +5,7 @@ import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.kanonproxy.KAnonProxy.Companion.STALE_SESSION_MS
 import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession
 import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession.Companion.CONNECTION_POLL_MS
+import com.jasonernst.kanonproxy.tcp.TcpSession
 import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
@@ -49,13 +50,13 @@ abstract class Session(
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     abstract val channel: ByteChannel
-    val outgoingToInternet = BidirectionalByteChannel()
     protected val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
     var lastHeard = System.currentTimeMillis()
     private val outgoingJob = SupervisorJob() // https://stackoverflow.com/a/63407811
     protected val outgoingScope = CoroutineScope(Dispatchers.IO + outgoingJob)
 
     val incomingQueue = LinkedBlockingDeque<Packet>()
+    val outgoingQueue = LinkedBlockingDeque<ByteBuffer>()
     private val incomingJob = SupervisorJob()
     private val incomingScope = CoroutineScope(Dispatchers.IO + incomingJob)
     private val isRunning = AtomicBoolean(true)
@@ -63,6 +64,7 @@ abstract class Session(
     private val channelJob = SupervisorJob()
     private val channelScope = CoroutineScope(Dispatchers.IO + channelJob)
 
+    val isConnecting = AtomicBoolean(true)
     val selector: Selector = Selector.open()
     val changeRequests = LinkedList<ChangeRequest>()
 
@@ -125,15 +127,18 @@ abstract class Session(
         if (channel is BidirectionalByteChannel) {
             return
         }
-        synchronized(changeRequests) {
-            changeRequests.add(ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE))
+        if (isConnecting.get().not()) {
+            logger.debug("Adding CHANGE request to write")
+            synchronized(changeRequests) {
+                changeRequests.add(ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.CHANGE_OPS, SelectionKey.OP_WRITE))
+            }
+            selector.wakeup()
         }
-        selector.wakeup()
     }
 
     fun startSelector() {
         channelScope.launch {
-            Thread.currentThread().name = "Channel scope: ${getKey()}"
+            Thread.currentThread().name = "Selector: ${getKey()}"
             while (isRunning.get()) {
                 try {
                     // Process any pending changes
@@ -141,11 +146,11 @@ abstract class Session(
                         for (changeRequest in changeRequests) {
                             when (changeRequest.type) {
                                 ChangeRequest.REGISTER -> {
-                                    // logger.debug("Processing REGISTER")
+                                    logger.debug("Processing REGISTER: ${changeRequest.ops}")
                                     changeRequest.channel.register(selector, changeRequest.ops)
                                 }
                                 ChangeRequest.CHANGE_OPS -> {
-                                    // logger.debug("Processing CHANGE_OPS")
+                                    logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
                                     val key = changeRequest.channel.keyFor(selector)
                                     key.interestOps(changeRequest.ops)
                                 }
@@ -198,14 +203,18 @@ abstract class Session(
                                 logger.error("INVALID KEY!!!!! $this@Session")
                             }
                             if (it.isWritable && it.isValid) {
-                                val available = outgoingToInternet.available()
-                                if (available > 0) {
-                                    val buff = ByteBuffer.allocate(available)
-                                    outgoingToInternet.read(buff)
-                                    buff.flip()
-                                    flushToRealChannel(buff)
+                                // could do a while loop here, but others might starve
+                                if (outgoingQueue.isNotEmpty()) {
+                                    val queue = outgoingQueue.take()
+                                    while (queue.hasRemaining()) {
+                                        channel.write(queue)
+                                    }
                                 }
-                                it.interestOps(SelectionKey.OP_READ)
+                                if (outgoingQueue.isNotEmpty()) {
+                                    it.interestOps(SelectionKey.OP_WRITE)
+                                } else {
+                                    it.interestOps(SelectionKey.OP_READ)
+                                }
                             }
                             if (it.isReadable && it.isValid) {
                                 if (!read()) {
@@ -224,8 +233,13 @@ abstract class Session(
                                         val result = socketChannel.finishConnect()
                                         if (result) {
                                             logger.debug("Tcp connection successful")
-                                            it.interestOps(SelectionKey.OP_READ)
-                                            startIncomingHandling()
+                                            isConnecting.set(false)
+                                            if (outgoingQueue.isNotEmpty()) {
+                                                it.interestOps(SelectionKey.OP_WRITE)
+                                            } else {
+                                                it.interestOps(SelectionKey.OP_READ)
+                                            }
+                                            // startIncomingHandling()
                                         } else {
                                             logger.debug("Finishing connection, still in progress")
                                             // will retry again when the selector wakes up
@@ -233,6 +247,14 @@ abstract class Session(
                                     } catch (e: Exception) {
                                         handleExceptionOnRemoteChannel(e)
                                         selector.close()
+                                    }
+                                } else if (socketChannel.isConnected) {
+                                    logger.debug("Tcp connection successful in isConnected")
+                                    isConnecting.set(false)
+                                    if (outgoingQueue.isNotEmpty()) {
+                                        it.interestOps(SelectionKey.OP_WRITE)
+                                    } else {
+                                        it.interestOps(SelectionKey.OP_READ)
                                     }
                                 }
                             }
@@ -337,35 +359,30 @@ abstract class Session(
 
     open fun getProtocol(): UByte = initialIpHeader?.protocol ?: throw IllegalArgumentException("No protocol")
 
-    /**
-     * This should only be called when the selector says we can write to the real channel
-     */
-    private fun flushToRealChannel(buffer: ByteBuffer) {
-        while (buffer.hasRemaining()) {
-            channel.write(buffer)
-        }
-    }
-
     open fun close(
         removeSession: Boolean = true,
         packet: Packet? = null,
         isIncomingJob: Boolean = false,
     ) {
         logger.debug("Closing session")
-        if (channel.isOpen) {
+        isRunning.set(false)
+        if (this is AnonymousTcpSession) {
             try {
-                channel.close()
+                channel.socket().close()
             } catch (e: Exception) {
-                logger.error("Failed to close channel", e)
+                logger.error("Error closing socket", e)
             }
         }
-        if (selector.isOpen) {
+        try {
+            channel.close()
+        } catch (e: Exception) {
+            logger.error("Failed to close channel", e)
+        }
+        try {
             selector.close()
+        } catch (e: Exception) {
+            logger.error("Failed to close selector", e)
         }
-        if (outgoingToInternet.isOpen) {
-            outgoingToInternet.close()
-        }
-        isRunning.set(false)
         incomingQueue.add(SentinelPacket)
         if (removeSession) {
             // important we remove before the incoming job is cancelled because
@@ -398,6 +415,11 @@ abstract class Session(
             channelJob.cancelAndJoin()
             logger.debug("Channel job stopped")
         }
+
+        if (this is TcpSession) {
+            this.tcpStateMachine.stopRtoAndTimeWait()
+        }
+
         logger.debug("Session closed")
     }
 }

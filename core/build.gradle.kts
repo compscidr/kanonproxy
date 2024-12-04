@@ -25,7 +25,9 @@ tasks.jacocoTestReport {
 }
 
 tasks.withType<Test>().configureEach {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        systemProperty("junit.jupiter.execution.parallel.config.dynamic.factor", "0.25") // Use half the number of processors
+    }
     finalizedBy("jacocoTestReport")
     testLogging {
         // get the test stdout / stderr to show up when we run gradle from command line

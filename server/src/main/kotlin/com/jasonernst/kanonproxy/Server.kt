@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.slf4j.LoggerFactory
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class Server(
     private val port: Int = 8080,
 ) : ProxySessionManager {
+    private val logger = LoggerFactory.getLogger(javaClass)
     private lateinit var socket: DatagramSocket
     private val isRunning = AtomicBoolean(false)
     private val kAnonProxy = KAnonProxy(IcmpLinux)
@@ -77,10 +79,17 @@ class Server(
             val packets = Packet.parseStream(stream)
             val clientAddress = InetSocketAddress(packet.address, packet.port)
             kAnonProxy.handlePackets(packets, clientAddress)
+            var newSession = false
             sessions.getOrPut(clientAddress) {
+                newSession = true
                 val session = ProxySession(clientAddress, kAnonProxy, socket, this)
                 session.start()
                 session
+            }
+            if (newSession) {
+                logger.debug("New proxy session for client: $clientAddress")
+            } else {
+                logger.debug("Continuing to use existing proxy session for client: $clientAddress")
             }
         }
     }

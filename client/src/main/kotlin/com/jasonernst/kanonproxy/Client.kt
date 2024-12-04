@@ -3,6 +3,7 @@ package com.jasonernst.kanonproxy
 import com.jasonernst.kanonproxy.tuntap.TunTapDevice
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.Packet.Companion.parseStream
+import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.packetdumper.ethernet.EtherType
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import kotlinx.coroutines.CoroutineScope
@@ -91,12 +92,17 @@ class Client(
         val stream = ByteBuffer.allocate(MAX_STREAM_BUFFER_SIZE)
 
         while (isConnected.get()) {
-            logger.debug("Waiting for response from server")
+            // logger.debug("Waiting for response from server")
             socket.receive(datagram)
             stream.put(buffer, 0, datagram.length)
             stream.flip()
             val packets = parseStream(stream)
             for (packet in packets) {
+                if (packet is SentinelPacket) {
+                    logger.debug("Sentinel packet, skip")
+                    continue
+                }
+                logger.debug("From proxy: $packet")
                 tunTapDevice.write(ByteBuffer.wrap(packet.toByteArray()))
                 packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = EtherType.DETECT)
             }
@@ -126,11 +132,14 @@ class Client(
             }
             if (bytesRead > 0) {
                 stream.put(readBuffer, 0, bytesRead)
-                logger.debug("Read {} bytes from OS. position: {} remaining {}", bytesRead, stream.position(), stream.remaining())
+                // logger.debug("Read {} bytes from OS. position: {} remaining {}", bytesRead, stream.position(), stream.remaining())
                 stream.flip()
-                logger.debug("After flip: position: {} remaining {}", stream.position(), stream.remaining())
+                // logger.debug("After flip: position: {} remaining {}", stream.position(), stream.remaining())
                 val packets = parseStream(stream)
-                logger.debug("After parse: position: {} remaining {}", stream.position(), stream.remaining())
+                for (packet in packets) {
+                    logger.debug("To proxy: $packet")
+                }
+                // logger.debug("After parse: position: {} remaining {}", stream.position(), stream.remaining())
                 writePackets(packets)
             }
         }

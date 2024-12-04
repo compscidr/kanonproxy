@@ -1806,16 +1806,14 @@ class TcpStateMachine(
             }
             try {
                 val buffer = ByteBuffer.wrap(payload)
-                while (buffer.hasRemaining()) {
-                    if (session.channel is BidirectionalByteChannel) {
-                        // tcp client case
+                if (session.channel is BidirectionalByteChannel) {
+                    while (buffer.hasRemaining()) {
                         session.channel.write(buffer)
-                    } else {
-                        // anon proxy case
-                        session.outgoingToInternet.write(buffer)
                     }
+                } else {
+                    session.outgoingQueue.add(buffer)
+                    session.readyToWrite()
                 }
-                session.readyToWrite()
             } catch (e: Exception) {
                 logger.warn("Error writing to channel: $e, shutting down session")
                 val finPacket = session.teardown(!swapSourceDestination, requiresLock = false)
@@ -2047,9 +2045,10 @@ class TcpStateMachine(
                         logger.warn("ENCAP PACKETS LOCK RELEASED")
                     }
 
-                    if (outgoingBuffer.remaining() > 0) {
+                    if (outgoingBuffer.remaining() > 0 && !session.isConnecting.get()) {
                         // let the channel know we're ready to read again
                         if (session.channel is SocketChannel) {
+                            logger.debug("Adding CHANGE request to read")
                             synchronized(session.changeRequests) {
                                 session.changeRequests.add(
                                     ChangeRequest(
@@ -2060,6 +2059,7 @@ class TcpStateMachine(
                                 )
                             }
                         } else if (session.channel is DatagramChannel) {
+                            logger.debug("Adding CHANGE request to read")
                             synchronized(session.changeRequests) {
                                 session.changeRequests.add(
                                     ChangeRequest(
@@ -2070,6 +2070,7 @@ class TcpStateMachine(
                                 )
                             }
                         }
+                        session.selector.wakeup()
                     }
                 }
                 if (packets.isNotEmpty()) {
@@ -2262,5 +2263,15 @@ class TcpStateMachine(
                     }
                 }
             }
+    }
+
+    fun stopRtoAndTimeWait() {
+        runBlocking {
+            logger.debug("Stopping RTO job")
+            rtoJob?.cancelAndJoin()
+            logger.debug("Stopped. Stopping timewait job")
+            timeWaitJob?.cancelAndJoin()
+            logger.debug("Stopped.")
+        }
     }
 }
