@@ -58,6 +58,7 @@ class UdpSession(
                 channel.configureBlocking(false)
                 channel.connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
                 logger.debug("UDP Connected")
+                isConnecting.set(false)
                 synchronized(changeRequests) {
                     changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, OP_READ))
                 }
@@ -125,9 +126,7 @@ class UdpSession(
         val payload = packet.payload
         try {
             val buffer = ByteBuffer.wrap(payload)
-            while (buffer.hasRemaining()) {
-                outgoingToInternet.write(buffer)
-            }
+            outgoingQueue.add(buffer)
             readyToWrite()
         } catch (e: Exception) {
             logger.error("Error writing to UDP channel: $e")

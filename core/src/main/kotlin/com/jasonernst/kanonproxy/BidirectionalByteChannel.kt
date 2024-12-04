@@ -1,69 +1,81 @@
 package com.jasonernst.kanonproxy
 
-import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
-import kotlin.math.min
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
-class BidirectionalByteChannel : ByteChannel {
-    private val logger = LoggerFactory.getLogger(javaClass)
-    private val buffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
-    private var isOpen = true
-    // private val readyToRead = MutableStateFlow(false)
+class BidirectionalByteChannel(private var buffer: ByteBuffer = ByteBuffer.allocate(1024)) : ByteChannel {
+    private val lock = ReentrantLock()
 
-    override fun isOpen(): Boolean = isOpen
-
-    override fun close() {
-        this.isOpen = false
-        // readyToRead.value = true
+    override fun isOpen(): Boolean {
+        return true
     }
 
-    override fun write(src: ByteBuffer): Int {
-        logger.debug("Waiting to write: ${src.limit()} bytes")
-        synchronized(buffer) {
-            val availableBytes = min(buffer.remaining(), src.remaining())
-            buffer.put(src.array(), src.position(), availableBytes)
-            src.position(src.position() + availableBytes)
-            // readyToRead.value = true
-            logger.debug("Wrote $availableBytes bytes")
-            return availableBytes
-        }
+    override fun close() {
+        // No resources to free in this simple implementation
     }
 
     override fun read(dst: ByteBuffer): Int {
-        // when this function is called, we expect the buffer is pointing to the end of what was written to it
-        // if its at zero, there is nothing to read
-//        if (buffer.position() == 0) {
-//            runBlocking {
-//                readyToRead.takeWhile { !it }.collect {}
-//            }
-//        }
-        if (!isOpen) {
-            return 0
+        if (!isOpen()) {
+            throw IllegalStateException("Channel is closed")
         }
 
-        synchronized(buffer) {
-            // flip the buffer to get it from write mode to read mode
-            buffer.flip()
-            val availableBytes = min(buffer.remaining(), dst.remaining())
-            dst.put(buffer.array(), buffer.position(), availableBytes)
-            buffer.position(buffer.position() + availableBytes)
-//        if (!buffer.hasRemaining()) {
-//            readyToRead.value = false
-//        }
-            // compact to get us back into read mode
-            buffer.compact()
-            return availableBytes
+        return lock.withLock {
+            // Check how many bytes can be read
+            val bytesToRead = minOf(dst.remaining(), buffer.remaining())
+            if (bytesToRead == 0) {
+                return@withLock -1 // End of stream
+            }
+
+            // Read bytes into destination buffer
+            for (i in 0 until bytesToRead) {
+                dst.put(buffer.get())
+            }
+
+            bytesToRead
         }
     }
 
-    fun available(): Int =
-//        if (readyToRead.value.not()) {
-//            0
-//        } else {
-//            buffer.position() // because we haven't flipped yet, this will be how many bytes there are to read
-//        }
-        synchronized(buffer) {
-            return buffer.position()
+    override fun write(src: ByteBuffer): Int {
+        if (!isOpen()) {
+            throw IllegalStateException("Channel is closed")
         }
+
+        return lock.withLock {
+            // Check how many bytes can be written
+            val bytesToWrite = minOf(src.remaining(), buffer.capacity() - buffer.position())
+            if (bytesToWrite == 0) {
+                return@withLock 0 // Buffer is full
+            }
+
+            // Write bytes from source buffer
+            for (i in 0 until bytesToWrite) {
+                buffer.put(src.get())
+            }
+
+            bytesToWrite
+        }
+    }
+
+    fun available(): Int {
+        return lock.withLock {
+            buffer.remaining()
+        }
+    }
+
+    fun getBuffer(): ByteBuffer {
+        return lock.withLock {
+            // Return a copy of the current buffer state
+            buffer.asReadOnlyBuffer()
+        }
+    }
+
+    fun resetBuffer() {
+        lock.withLock {
+            // Reset the buffer for reuse
+            buffer.clear()
+        }
+    }
+
 }

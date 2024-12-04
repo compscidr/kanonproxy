@@ -42,6 +42,7 @@ class ProxySession(
             if (response is SentinelPacket) {
                 logger.warn("Received sentinel packet, stopping ProxySession: $clientAddress")
                 isRunning.set(false)
+                break
             }
             logger.debug("Received response from proxy for client: $clientAddress, sending datagram back")
             val buffer = response.toByteArray()
