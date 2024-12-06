@@ -24,7 +24,7 @@ class MainActivity: ComponentActivity() {
     private lateinit var vpnService: KAnonVpnService
     private var isBound by mutableStateOf(false)
 
-    val connection = object : ServiceConnection {
+    private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName?, service: IBinder?) {
             logger.debug("Bound to VPN service")
             // We've bound to LocalService, cast the IBinder and get LocalService instance.
