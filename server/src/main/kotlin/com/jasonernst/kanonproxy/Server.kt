@@ -3,14 +3,18 @@ package com.jasonernst.kanonproxy
 import com.jasonernst.icmp.common.Icmp
 import com.jasonernst.icmp.linux.IcmpLinux
 import com.jasonernst.knet.Packet
+import com.jasonernst.packetdumper.AbstractPacketDumper
+import com.jasonernst.packetdumper.DummyPacketDumper
+import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
+import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper.Companion.DEFAULT_PORT
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
+import sun.misc.Signal
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -19,8 +23,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 class Server(
-    private val icmp: Icmp,
+    icmp: Icmp,
     private val port: Int = 8080,
+    private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
 ) : ProxySessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
     private lateinit var socket: DatagramSocket
@@ -37,6 +42,8 @@ class Server(
 
         @JvmStatic
         fun main(args: Array<String>) {
+            // listen on one port higher so we don't conflict with the client
+            val packetDumper = PcapNgTcpServerPacketDumper(listenPort = DEFAULT_PORT + 1)
             val server =
                 if (args.isEmpty()) {
                     println("Using default port: 8080")
@@ -49,7 +56,14 @@ class Server(
                     val port = args[0].toInt()
                     Server(IcmpLinux, port)
                 }
+            packetDumper.start()
             server.start()
+
+            Signal.handle(Signal("INT")) {
+                packetDumper.stop()
+                server.stop()
+            }
+
             server.waitUntilShutdown()
         }
     }
@@ -72,7 +86,9 @@ class Server(
 
     private fun waitUntilShutdown() {
         runBlocking {
-            readFromClientJob.join()
+            if (readFromClientJob.complete().not()) {
+                readFromClientJob.join()
+            }
         }
     }
 

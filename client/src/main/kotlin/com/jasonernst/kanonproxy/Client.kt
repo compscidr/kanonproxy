@@ -3,8 +3,9 @@ package com.jasonernst.kanonproxy
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.Packet.Companion.parseStream
 import com.jasonernst.knet.SentinelPacket
+import com.jasonernst.packetdumper.AbstractPacketDumper
+import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.ethernet.EtherType
-import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,7 @@ import kotlin.math.min
  */
 abstract class Client(
     private val socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
+    private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val socket = DatagramSocket()
@@ -34,7 +36,6 @@ abstract class Client(
     private lateinit var readFromTunJobScope: CoroutineScope
     private lateinit var readFromProxyJob: CompletableJob
     private lateinit var readFromProxyJobScope: CoroutineScope
-    private val packetDumper = PcapNgTcpServerPacketDumper(isSimple = false)
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
@@ -46,7 +47,6 @@ abstract class Client(
             logger.debug("Client is already connected")
             return
         }
-        packetDumper.start()
 
         readFromProxyJob = SupervisorJob()
         readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)
@@ -71,14 +71,22 @@ abstract class Client(
     }
 
     fun waitUntilShutdown() {
-        // block until the read job is finished
+        // block until the read jobs are finished
         runBlocking {
-            readFromProxyJob.join()
-            readFromTunJob.join()
+            if (readFromProxyJob.complete().not()) {
+                readFromProxyJob.join()
+            }
+            if (readFromTunJob.complete().not()) {
+                readFromTunJob.join()
+            }
         }
     }
 
-    abstract fun tunRead(readBytes: ByteArray, bytesToRead: Int): Int
+    abstract fun tunRead(
+        readBytes: ByteArray,
+        bytesToRead: Int,
+    ): Int
+
     abstract fun tunWrite(writeBytes: ByteArray)
 
     private fun readFromProxyWriteToTun() {
@@ -125,12 +133,13 @@ abstract class Client(
 
         while (isConnected.get()) {
             val bytesToRead = min(MAX_RECEIVE_BUFFER_SIZE, stream.remaining())
-            val bytesRead = try {
-                tunRead(readBuffer, bytesToRead)
-            } catch (e: Exception) {
-                logger.warn("Exception trying to read from proxy, probably shutting down")
-                break
-            }
+            val bytesRead =
+                try {
+                    tunRead(readBuffer, bytesToRead)
+                } catch (e: Exception) {
+                    logger.warn("Exception trying to read from proxy, probably shutting down")
+                    break
+                }
             if (bytesRead == -1) {
                 logger.warn("End of OS stream")
                 break
@@ -154,7 +163,6 @@ abstract class Client(
     fun close() {
         logger.debug("Stopping client")
         isConnected.set(false)
-        packetDumper.stop()
         socket.close()
         runBlocking {
             logger.debug("Waiting for tun reader to stop")

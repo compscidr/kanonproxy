@@ -3,12 +3,15 @@ package com.jasonernst.kanonproxy
 import android.os.ParcelFileDescriptor
 import android.os.ParcelFileDescriptor.AutoCloseInputStream
 import android.os.ParcelFileDescriptor.AutoCloseOutputStream
+import com.jasonernst.packetdumper.AbstractPacketDumper
+import com.jasonernst.packetdumper.DummyPacketDumper
 import java.net.InetSocketAddress
 
 class AndroidClient(
     socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
-    private val vpnFileDescriptor: ParcelFileDescriptor
-) : Client(socketAddress) {
+    packetDumper: AbstractPacketDumper = DummyPacketDumper,
+    vpnFileDescriptor: ParcelFileDescriptor
+) : Client(socketAddress, packetDumper) {
 
     private val inputStream = AutoCloseInputStream(vpnFileDescriptor)
     private val outputStream = AutoCloseOutputStream(vpnFileDescriptor)

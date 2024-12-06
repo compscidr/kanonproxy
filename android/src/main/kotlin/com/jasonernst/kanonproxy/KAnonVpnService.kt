@@ -59,7 +59,7 @@ class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback
         //.addRoute("2000::", 3) // https://wiki.strongswan.org/issues/1261
 
         vpnFileDescriptor = builder.establish() ?: throw RuntimeException("Error establishing VPN")
-        client = AndroidClient(vpnFileDescriptor = vpnFileDescriptor)
+        client = AndroidClient(vpnFileDescriptor = vpnFileDescriptor, packetDumper = packetDumper)
         client.connect()
         viewModel.serviceStarted()
     }
