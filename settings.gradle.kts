@@ -19,3 +19,4 @@ rootProject.name = "kanonproxy"
 include("core")
 include("server")
 include("client")
+include(":android")
