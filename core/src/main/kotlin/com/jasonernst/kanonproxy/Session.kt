@@ -266,6 +266,9 @@ abstract class Session(
                 } catch (e: ClosedSelectorException) {
                     logger.warn("Selector closed, probably shutting session down")
                     break
+                } catch (e: Exception) {
+                    logger.warn("Exception trying write to remote channel, probably shutting down")
+                    break
                 }
             }
         }

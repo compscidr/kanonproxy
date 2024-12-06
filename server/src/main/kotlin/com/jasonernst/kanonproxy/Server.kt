@@ -1,10 +1,13 @@
 package com.jasonernst.kanonproxy
 
+import com.jasonernst.icmp.common.Icmp
 import com.jasonernst.icmp.linux.IcmpLinux
 import com.jasonernst.knet.Packet
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
@@ -16,16 +19,17 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 class Server(
+    private val icmp: Icmp,
     private val port: Int = 8080,
 ) : ProxySessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
     private lateinit var socket: DatagramSocket
     private val isRunning = AtomicBoolean(false)
-    private val kAnonProxy = KAnonProxy(IcmpLinux)
+    private val kAnonProxy = KAnonProxy(icmp)
     private val sessions = ConcurrentHashMap<InetSocketAddress, ProxySession>()
 
-    private val readFromClientJob = SupervisorJob()
-    private val readFromClientJobScope = CoroutineScope(Dispatchers.IO + readFromClientJob)
+    private lateinit var readFromClientJob: CompletableJob
+    private lateinit var readFromClientJobScope: CoroutineScope
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
@@ -36,32 +40,37 @@ class Server(
             val server =
                 if (args.isEmpty()) {
                     println("Using default port: 8080")
-                    Server()
+                    Server(IcmpLinux)
                 } else {
                     if (args.size != 1) {
                         println("Usage: Server <port>")
                         return
                     }
                     val port = args[0].toInt()
-                    Server(port)
+                    Server(IcmpLinux, port)
                 }
             server.start()
+            server.waitUntilShutdown()
         }
     }
 
     fun start() {
         if (isRunning.get()) {
-            println("Server is already running")
+            logger.warn("Server is already running")
             return
         }
-        println("Starting server on port: $port")
-        socket = DatagramSocket(port)
         isRunning.set(true)
         kAnonProxy.start()
+        readFromClientJob = SupervisorJob()
+        readFromClientJobScope = CoroutineScope(Dispatchers.IO + readFromClientJob)
         readFromClientJobScope.launch {
+            logger.debug("Starting server on port: $port")
+            socket = DatagramSocket(port)
             readFromClientWriteToProxy()
         }
+    }
 
+    private fun waitUntilShutdown() {
         runBlocking {
             readFromClientJob.join()
         }
@@ -73,7 +82,12 @@ class Server(
         val stream = ByteBuffer.allocate(MAX_STREAM_BUFFER_SIZE)
 
         while (isRunning.get()) {
-            socket.receive(packet)
+            try {
+                socket.receive(packet)
+            } catch (e: Exception) {
+                logger.warn("Error trying to receive on server socket, probably shutting down: $e")
+                break
+            }
             stream.put(buffer, 0, packet.length)
             stream.flip()
             val packets = Packet.parseStream(stream)
@@ -92,6 +106,7 @@ class Server(
                 logger.debug("Continuing to use existing proxy session for client: $clientAddress")
             }
         }
+        logger.debug("Server no longer listening")
     }
 
     override fun removeSession(clientAddress: InetSocketAddress) {
@@ -99,9 +114,18 @@ class Server(
     }
 
     fun stop() {
+        logger.debug("Stopping server")
         isRunning.set(false)
         socket.close()
         kAnonProxy.stop()
+        logger.debug("Stopping outstanding sessions")
         sessions.values.forEach { it.stop() }
+        logger.debug("All sessions stopped, stopping client reader job")
+        runBlocking {
+            if (readFromClientJob.complete().not()) {
+                readFromClientJob.join()
+            }
+        }
+        logger.debug("Server stopped")
     }
 }

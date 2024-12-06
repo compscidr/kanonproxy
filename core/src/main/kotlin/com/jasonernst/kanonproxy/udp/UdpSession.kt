@@ -60,6 +60,7 @@ class UdpSession(
                 logger.debug("UDP Connected")
                 isConnecting.set(false)
                 synchronized(changeRequests) {
+                    logger.debug("Registering for READs")
                     changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, OP_READ))
                 }
                 startIncomingHandling()

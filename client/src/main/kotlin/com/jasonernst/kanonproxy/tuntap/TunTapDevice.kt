@@ -4,6 +4,8 @@ import com.sun.jna.Native
 import com.sun.jna.NativeLong
 import jnr.enxio.channels.NativeSocketChannel
 import org.slf4j.LoggerFactory
+import java.io.FileInputStream
+import java.io.InputStream
 import java.nio.ByteBuffer
 import kotlin.experimental.or
 
@@ -42,14 +44,16 @@ class TunTapDevice {
         nativeSocketChannel = NativeSocketChannel(fd)
     }
 
-    fun read(
-        readBuffer: ByteArray,
-        bytesToRead: Int,
-    ): Int = LibC.read(nativeSocketChannel.fd, readBuffer, NativeLong(bytesToRead.toLong()))
+    fun read(readBytes: ByteArray, bytesToRead: Int): Int {
+        // why are we doing this and not using nativeSocketChannel read?
+        return LibC.read(nativeSocketChannel.fd, readBytes, NativeLong(bytesToRead.toLong()))
+    }
 
-    fun write(buffer: ByteBuffer) {
-        while (buffer.hasRemaining()) {
-            nativeSocketChannel.write(buffer)
+    // todo: investiate if Lib
+    fun write(writeBytes: ByteArray) {
+        val writeBuffer = ByteBuffer.wrap(writeBytes)
+        while (writeBuffer.hasRemaining()) {
+            nativeSocketChannel.write(writeBuffer)
         }
     }
 }

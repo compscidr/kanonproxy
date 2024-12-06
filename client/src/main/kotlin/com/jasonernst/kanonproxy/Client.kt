@@ -1,11 +1,11 @@
 package com.jasonernst.kanonproxy
 
-import com.jasonernst.kanonproxy.tuntap.TunTapDevice
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.Packet.Companion.parseStream
 import com.jasonernst.knet.SentinelPacket
 import com.jasonernst.packetdumper.ethernet.EtherType
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,72 +19,67 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
-class Client(
+/**
+ * Abstract client that can support Linux, Android, etc implementations that are specific to their
+ * tun/tap device.
+ */
+abstract class Client(
     private val socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val socket = DatagramSocket()
-    private val tunTapDevice = TunTapDevice()
 
     private val isConnected = AtomicBoolean(false)
-
-    private val readFromTunJob = SupervisorJob()
-    private val readFromTunJobScope = CoroutineScope(Dispatchers.IO + readFromTunJob)
-    private val readFromProxyJob = SupervisorJob()
-    private val readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)
-
+    private lateinit var readFromTunJob: CompletableJob
+    private lateinit var readFromTunJobScope: CoroutineScope
+    private lateinit var readFromProxyJob: CompletableJob
+    private lateinit var readFromProxyJobScope: CoroutineScope
     private val packetDumper = PcapNgTcpServerPacketDumper(isSimple = false)
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
         private const val MAX_RECEIVE_BUFFER_SIZE = 1500 // max amount we can recv in one read (should be the MTU or bigger probably)
-
-        @JvmStatic
-        fun main(args: Array<String>) {
-            val client =
-                if (args.isEmpty()) {
-                    println("Using default server: 127.0.0.1 8080")
-                    Client()
-                } else {
-                    if (args.size != 2) {
-                        println("Usage: Client <server> <port>")
-                        return
-                    }
-                    val server = args[0]
-                    val port = args[1].toInt()
-                    Client(InetSocketAddress(server, port))
-                }
-            client.connect()
-        }
     }
 
     fun connect() {
         if (isConnected.get()) {
-            println("Client is already connected")
+            logger.debug("Client is already connected")
             return
         }
         packetDumper.start()
 
-        println("Connecting to server: $socketAddress")
-        socket.connect(socketAddress)
-        println("Connected to server: $socketAddress")
-        isConnected.set(true)
-        tunTapDevice.open()
-
+        readFromProxyJob = SupervisorJob()
+        readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)
         readFromProxyJobScope.launch {
-            readFromProxyWriteToTun()
-        }
+            logger.debug("Connecting to server: {}", socketAddress)
+            try {
+                socket.connect(socketAddress)
+                logger.debug("Connected to server: {}", socketAddress)
+                isConnected.set(true)
 
-        readFromTunJobScope.launch {
-            readFromTunWriteToProxy()
-        }
+                readFromTunJob = SupervisorJob()
+                readFromTunJobScope = CoroutineScope(Dispatchers.IO + readFromTunJob)
+                readFromTunJobScope.launch {
+                    readFromTunWriteToProxy()
+                }
 
+                readFromProxyWriteToTun()
+            } catch (e: Exception) {
+                logger.error("Failed to connect to server")
+            }
+        }
+    }
+
+    fun waitUntilShutdown() {
         // block until the read job is finished
         runBlocking {
             readFromProxyJob.join()
             readFromTunJob.join()
         }
     }
+
+    abstract fun tunRead(readBytes: ByteArray, bytesToRead: Int): Int
+    abstract fun tunWrite(writeBytes: ByteArray)
 
     private fun readFromProxyWriteToTun() {
         val buffer = ByteArray(MAX_RECEIVE_BUFFER_SIZE)
@@ -93,7 +88,12 @@ class Client(
 
         while (isConnected.get()) {
             // logger.debug("Waiting for response from server")
-            socket.receive(datagram)
+            try {
+                socket.receive(datagram)
+            } catch (e: Exception) {
+                logger.error("Error receiving from server: $e")
+                break
+            }
             stream.put(buffer, 0, datagram.length)
             stream.flip()
             val packets = parseStream(stream)
@@ -103,7 +103,7 @@ class Client(
                     continue
                 }
                 logger.debug("From proxy: $packet")
-                tunTapDevice.write(ByteBuffer.wrap(packet.toByteArray()))
+                tunWrite(packet.toByteArray())
                 packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = EtherType.DETECT)
             }
         }
@@ -125,7 +125,12 @@ class Client(
 
         while (isConnected.get()) {
             val bytesToRead = min(MAX_RECEIVE_BUFFER_SIZE, stream.remaining())
-            val bytesRead = tunTapDevice.read(readBuffer, bytesToRead)
+            val bytesRead = try {
+                tunRead(readBuffer, bytesToRead)
+            } catch (e: Exception) {
+                logger.warn("Exception trying to read from proxy, probably shutting down")
+                break
+            }
             if (bytesRead == -1) {
                 logger.warn("End of OS stream")
                 break
@@ -147,6 +152,21 @@ class Client(
     }
 
     fun close() {
+        logger.debug("Stopping client")
+        isConnected.set(false)
         packetDumper.stop()
+        socket.close()
+        runBlocking {
+            logger.debug("Waiting for tun reader to stop")
+            if (readFromTunJob.complete().not()) {
+                readFromTunJob.join()
+            }
+            logger.debug("Stopped, waiting for proxy reader to stop")
+            if (readFromProxyJob.complete().not()) {
+                readFromProxyJob.join()
+            }
+            logger.debug("Stopped")
+        }
+        logger.debug("Client stopped")
     }
 }

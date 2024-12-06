@@ -47,7 +47,12 @@ class ProxySession(
             logger.debug("Received response from proxy for client: $clientAddress, sending datagram back")
             val buffer = response.toByteArray()
             val datagramPacket = DatagramPacket(buffer, buffer.size, clientAddress)
-            socket.send(datagramPacket)
+            try {
+                socket.send(datagramPacket)
+            } catch (e: Exception) {
+                logger.debug("Error trying to write to proxy server, probably shutting down: $e")
+                break
+            }
         }
         sessionManager.removeSession(clientAddress)
     }
@@ -55,7 +60,9 @@ class ProxySession(
     fun stop() {
         isRunning.set(false)
         runBlocking {
-            readFromProxyJob.cancelAndJoin()
+            if (readFromProxyJob.complete().not()) {
+                readFromProxyJob.cancelAndJoin()
+            }
         }
     }
 }
