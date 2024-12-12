@@ -54,4 +54,9 @@ class LinuxClient(
     override fun tunWrite(writeBytes: ByteArray) {
         tunTapDevice.write(writeBytes)
     }
+
+    override fun close() {
+        tunTapDevice.close()
+        super.close()
+    }
 }

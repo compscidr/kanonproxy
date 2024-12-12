@@ -15,6 +15,7 @@ import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,6 +28,8 @@ import kotlin.math.min
 abstract class Client(
     private val socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
+    private val onlyDestinations: List<InetAddress> = emptyList(),
+    private val onlyProtocols: List<UByte> = emptyList()
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val socket = DatagramSocket()
@@ -68,17 +71,14 @@ abstract class Client(
                 logger.error("Failed to connect to server")
             }
         }
+        readFromProxyJob.complete()
     }
 
     fun waitUntilShutdown() {
         // block until the read jobs are finished
         runBlocking {
-            if (readFromProxyJob.complete().not()) {
-                readFromProxyJob.join()
-            }
-            if (readFromTunJob.complete().not()) {
-                readFromTunJob.join()
-            }
+            readFromProxyJob.join()
+            readFromTunJob.join()
         }
     }
 
@@ -111,8 +111,8 @@ abstract class Client(
                     continue
                 }
                 logger.debug("From proxy: $packet")
-                tunWrite(packet.toByteArray())
                 packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = EtherType.DETECT)
+                tunWrite(packet.toByteArray())
             }
         }
         logger.warn("No longer reading from server")
@@ -122,14 +122,25 @@ abstract class Client(
         packets.forEach { packet ->
             val buffer = packet.toByteArray()
             val datagramPacket = DatagramPacket(buffer, buffer.size, socketAddress)
-            socket.send(datagramPacket)
             packetDumper.dumpBuffer(ByteBuffer.wrap(buffer), etherType = EtherType.DETECT)
+            try {
+                socket.send(datagramPacket)
+            } catch (e: Exception) {
+                logger.warn("IO error writing to proxy, probably shutting down")
+                return@forEach
+            }
+            // logger.debug("From OS: $packet")
         }
     }
 
     private fun readFromTunWriteToProxy() {
         val readBuffer = ByteArray(MAX_RECEIVE_BUFFER_SIZE)
         val stream = ByteBuffer.allocate(MAX_STREAM_BUFFER_SIZE)
+        val filters = onlyProtocols.isNotEmpty() || onlyDestinations.isNotEmpty()
+
+        if (filters) {
+            logger.warn("Filters enabled, not sending all packets to proxy")
+        }
 
         while (isConnected.get()) {
             val bytesToRead = min(MAX_RECEIVE_BUFFER_SIZE, stream.remaining())
@@ -137,7 +148,7 @@ abstract class Client(
                 try {
                     tunRead(readBuffer, bytesToRead)
                 } catch (e: Exception) {
-                    logger.warn("Exception trying to read from proxy, probably shutting down")
+                    logger.warn("Exception trying to read from proxy, probably shutting down: $e")
                     break
                 }
             if (bytesRead == -1) {
@@ -150,29 +161,50 @@ abstract class Client(
                 stream.flip()
                 // logger.debug("After flip: position: {} remaining {}", stream.position(), stream.remaining())
                 val packets = parseStream(stream)
-                for (packet in packets) {
-                    logger.debug("To proxy: $packet")
+
+                if (filters) {
+                    val packetsToForward: MutableList<Packet> = mutableListOf()
+                    for (packet in packets) {
+                        if (onlyDestinations.isNotEmpty()) {
+                            if (packet.ipHeader?.destinationAddress in onlyDestinations) {
+                                if(onlyProtocols.isNotEmpty()) {
+                                    if (packet.ipHeader?.protocol in onlyProtocols) {
+                                        packetsToForward.add(packet)
+                                        //logger.debug("To proxy: $packet")
+                                    }
+                                } else {
+                                    packetsToForward.add(packet)
+                                    //logger.debug("To proxy: $packet")
+                                }
+                            }
+                        } else {
+                            if(onlyProtocols.isNotEmpty()) {
+                                if (packet.ipHeader?.protocol in onlyProtocols) {
+                                    packetsToForward.add(packet)
+                                    //logger.debug("To proxy: $packet")
+                                }
+                            }
+                        }
+                    }
+                    writePackets(packetsToForward)
+                } else {
+                    writePackets(packets)
                 }
-                // logger.debug("After parse: position: {} remaining {}", stream.position(), stream.remaining())
-                writePackets(packets)
             }
         }
         logger.warn("No longer reading from TUN adapter")
+        readFromTunJob.complete()
     }
 
-    fun close() {
+    open fun close() {
         logger.debug("Stopping client")
         isConnected.set(false)
         socket.close()
         runBlocking {
             logger.debug("Waiting for tun reader to stop")
-            if (readFromTunJob.complete().not()) {
-                readFromTunJob.join()
-            }
+            readFromTunJob.join()
             logger.debug("Stopped, waiting for proxy reader to stop")
-            if (readFromProxyJob.complete().not()) {
-                readFromProxyJob.join()
-            }
+            readFromProxyJob.join()
             logger.debug("Stopped")
         }
         logger.debug("Client stopped")

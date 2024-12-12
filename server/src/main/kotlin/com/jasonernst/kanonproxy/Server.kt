@@ -26,11 +26,12 @@ class Server(
     icmp: Icmp,
     private val port: Int = 8080,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
+    protector: VpnProtector = DummyProtector
 ) : ProxySessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
     private lateinit var socket: DatagramSocket
     private val isRunning = AtomicBoolean(false)
-    private val kAnonProxy = KAnonProxy(icmp)
+    private val kAnonProxy = KAnonProxy(icmp, protector)
     private val sessions = ConcurrentHashMap<InetSocketAddress, ProxySession>()
 
     private lateinit var readFromClientJob: CompletableJob
@@ -78,21 +79,21 @@ class Server(
         readFromClientJob = SupervisorJob()
         readFromClientJobScope = CoroutineScope(Dispatchers.IO + readFromClientJob)
         readFromClientJobScope.launch {
-            logger.debug("Starting server on port: $port")
-            socket = DatagramSocket(port)
             readFromClientWriteToProxy()
         }
     }
 
     private fun waitUntilShutdown() {
         runBlocking {
-            if (readFromClientJob.complete().not()) {
-                readFromClientJob.join()
-            }
+            readFromClientJob.join()
         }
     }
 
     private fun readFromClientWriteToProxy() {
+        Thread.currentThread().name = "Server proxy listener"
+        logger.debug("Starting server on port: $port")
+        socket = DatagramSocket(port)
+
         val buffer = ByteArray(MAX_RECEIVE_BUFFER_SIZE)
         val packet = DatagramPacket(buffer, buffer.size)
         val stream = ByteBuffer.allocate(MAX_STREAM_BUFFER_SIZE)
@@ -107,6 +108,9 @@ class Server(
             stream.put(buffer, 0, packet.length)
             stream.flip()
             val packets = Packet.parseStream(stream)
+//            for (packet in packets) {
+//                logger.debug("From Client: packet $packet")
+//            }
             val clientAddress = InetSocketAddress(packet.address, packet.port)
             kAnonProxy.handlePackets(packets, clientAddress)
             var newSession = false
@@ -117,15 +121,17 @@ class Server(
                 session
             }
             if (newSession) {
-                logger.debug("New proxy session for client: $clientAddress")
+                logger.warn("New proxy session for client: $clientAddress")
             } else {
-                logger.debug("Continuing to use existing proxy session for client: $clientAddress")
+                // logger.debug("Continuing to use existing proxy session for client: $clientAddress")
             }
         }
-        logger.debug("Server no longer listening")
+        logger.warn("Server no longer listening")
+        readFromClientJob.complete()
     }
 
     override fun removeSession(clientAddress: InetSocketAddress) {
+        kAnonProxy.removeSessionByClientAddress(clientAddress)
         sessions.remove(clientAddress)
     }
 
@@ -138,9 +144,7 @@ class Server(
         sessions.values.forEach { it.stop() }
         logger.debug("All sessions stopped, stopping client reader job")
         runBlocking {
-            if (readFromClientJob.complete().not()) {
-                readFromClientJob.join()
-            }
+            readFromClientJob.join()
         }
         logger.debug("Server stopped")
     }

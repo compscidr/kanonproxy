@@ -47,14 +47,28 @@ class TunTapDevice {
         bytesToRead: Int,
     ): Int {
         // why are we doing this and not using nativeSocketChannel read?
-        return LibC.read(nativeSocketChannel.fd, readBytes, NativeLong(bytesToRead.toLong()))
+        //return LibC.read(nativeSocketChannel.fd, readBytes, NativeLong(bytesToRead.toLong()))
+        val buffer = ByteBuffer.allocate(bytesToRead)
+        val result = nativeSocketChannel.read(buffer)
+        logger.debug("Read $result bytes from nativesocket")
+        if (result > 0) {
+            buffer.rewind()
+            buffer.get(readBytes)
+            buffer.clear()
+        } else {
+            logger.debug("Read $result bytes")
+        }
+        return result
     }
 
-    // todo: investiate if Lib
     fun write(writeBytes: ByteArray) {
         val writeBuffer = ByteBuffer.wrap(writeBytes)
         while (writeBuffer.hasRemaining()) {
             nativeSocketChannel.write(writeBuffer)
         }
+    }
+
+    fun close() {
+        nativeSocketChannel.close()
     }
 }

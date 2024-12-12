@@ -46,6 +46,9 @@ android {
 }
 
 dependencies {
+    implementation(project(":core")) {
+        exclude("ch.qos.logback")
+    }
     implementation(project(":client")) {
         exclude("ch.qos.logback")
     }
@@ -56,6 +59,7 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling.preview)
     runtimeOnly(libs.logback.android)
     implementation(libs.icmp.android)
+    implementation(libs.knet)
     implementation(libs.packetdumper)
     implementation(libs.androidx.preference)
     implementation(platform(libs.compose.bom))

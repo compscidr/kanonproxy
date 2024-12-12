@@ -3,7 +3,6 @@ package com.jasonernst.kanonproxy
 import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
-import android.os.Binder
 import android.os.Bundle
 import android.os.IBinder
 import androidx.activity.ComponentActivity
@@ -15,6 +14,12 @@ import androidx.compose.runtime.setValue
 import androidx.preference.PreferenceManager
 import com.jasonernst.kanonproxy.model.KAnonViewModel
 import com.jasonernst.kanonproxy.ui.MainScreen
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 
 class MainActivity: ComponentActivity() {

@@ -72,7 +72,6 @@ class TcpClient(
     // this is where the state machine will write into for us to receive it here
     override val channel: ByteChannel = BidirectionalByteChannel()
     private val stringDumper = StringPacketDumper()
-    private val isRunning = AtomicBoolean(false)
 
     private val readJob = SupervisorJob()
     private val readJobScope = CoroutineScope(Dispatchers.IO + readJob)
@@ -394,7 +393,7 @@ class TcpClient(
             logger.debug("writejob stopped")
         }
         logger.debug("Waiting for tcpState machine cleanup")
-        tcpStateMachine.cleanup()
+        tcpStateMachine.stopJobs()
         logger.debug("tcpState machine cleanup finished")
     }
 }

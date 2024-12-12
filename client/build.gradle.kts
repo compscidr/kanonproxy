@@ -5,6 +5,18 @@ plugins {
     id("jacoco")
 }
 
+tasks.withType<Test>().configureEach {
+    finalizedBy("jacocoTestReport")
+    testLogging {
+        // get the test stdout / stderr to show up when we run gradle from command line
+        // https://itecnote.com/tecnote/gradle-how-to-get-output-from-test-stderr-stdout-into-console/
+        // https://developer.android.com/studio/test/advanced-test-setup
+        // https://docs.gradle.org/current/javadoc/org/gradle/api/tasks/testing/Test.html
+        outputs.upToDateWhen {true}
+        showStandardStreams = true
+    }
+}
+
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
@@ -27,4 +39,6 @@ dependencies {
     implementation(libs.jnr.enxio)
     implementation(libs.knet)
     runtimeOnly(libs.logback.classic)
+    testImplementation(libs.bundles.test)
+    testRuntimeOnly(libs.junit.jupiter.engine)
 }

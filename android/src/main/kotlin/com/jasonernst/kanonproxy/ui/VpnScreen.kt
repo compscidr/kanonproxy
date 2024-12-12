@@ -7,11 +7,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCompositionContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role.Companion.Button
 import androidx.compose.ui.unit.dp
 import com.jasonernst.kanonproxy.VpnPermissionHelper
 import com.jasonernst.kanonproxy.model.KAnonViewModel
@@ -78,6 +81,19 @@ fun VpnScreen(kAnonViewModel: KAnonViewModel, vpnUiService: VpnUiService) {
         LazyColumn {
             items(kAnonViewModel.getPcapUsers()) { pcapUser ->
                 PcapUserItem(pcapUser = pcapUser)
+            }
+        }
+
+        Row {
+            val isRunning = kAnonViewModel.isRunning.value
+            if (isRunning) {
+                Button(onClick = {kAnonViewModel.stopThreadScope()}) {
+                    Text("Stop")
+                }
+            } else {
+                Button(onClick = {kAnonViewModel.startThreadScope()}) {
+                    Text("Start")
+                }
             }
         }
     }

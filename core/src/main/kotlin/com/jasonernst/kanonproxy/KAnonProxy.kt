@@ -9,7 +9,10 @@ import com.jasonernst.icmp.common.v4.IcmpV4EchoPacket
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachableCodes
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.icmp.common.v6.IcmpV6EchoPacket
+import com.jasonernst.kanonproxy.tcp.AnonymousTcpSession
+import com.jasonernst.kanonproxy.tcp.TcpHeaderFactory.createRstPacket
 import com.jasonernst.kanonproxy.tcp.TcpStateMachine.Companion.G
+import com.jasonernst.kanonproxy.tcp.TransmissionControlBlock
 import com.jasonernst.kanonproxy.udp.UdpSession
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
@@ -18,6 +21,8 @@ import com.jasonernst.knet.network.ip.v4.Ipv4Header
 import com.jasonernst.knet.network.ip.v6.Ipv6Header
 import com.jasonernst.knet.network.nextheader.IcmpNextHeaderWrapper
 import com.jasonernst.knet.transport.TransportHeader
+import com.jasonernst.knet.transport.tcp.TcpHeader
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,13 +55,13 @@ class KAnonProxy(
     // blocking another
     private val outgoingQueues = ConcurrentHashMap<InetSocketAddress, LinkedBlockingDeque<Packet>>()
     private val incomingQueue = LinkedBlockingDeque<Pair<Packet, InetSocketAddress?>>()
-    private val sessionTablesBySessionKey = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<String, Session>>()
+    val sessionTablesBySessionKey = ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<String, Session>>()
 
     private val isRunning = AtomicBoolean(false)
-    private val maintenanceJob = SupervisorJob() // https://stackoverflow.com/a/63407811
-    private val maintenanceScope = CoroutineScope(Dispatchers.IO + maintenanceJob)
-    private val incomingQueueJob = SupervisorJob()
-    private val incomingQueueScope = CoroutineScope(Dispatchers.IO + incomingQueueJob)
+    private lateinit var maintenanceJob: CompletableJob // https://stackoverflow.com/a/63407811
+    private lateinit var maintenanceScope: CoroutineScope
+    private lateinit var incomingQueueJob: CompletableJob
+    private lateinit var incomingQueueScope: CoroutineScope
 
     companion object {
         const val STALE_SESSION_MS = 5000L
@@ -67,47 +72,36 @@ class KAnonProxy(
             logger.warn("KAnonProxy is already running")
             return
         }
+        logger.debug("Starting KAnonProxy")
         isRunning.set(true)
+        maintenanceJob = SupervisorJob()
+        maintenanceScope = CoroutineScope(Dispatchers.IO + maintenanceJob)
         maintenanceScope.launch {
             sessionMaintenanceThread()
         }
+        incomingQueueJob = SupervisorJob()
+        incomingQueueScope = CoroutineScope(Dispatchers.IO + incomingQueueJob)
         incomingQueueScope.launch {
             packetHandler()
         }
         logger.debug("KAnonProxy started")
     }
 
-    fun stop() {
-        logger.debug("Stopping KAnonProxy")
-        isRunning.set(false)
-        incomingQueue.put(Pair(SentinelPacket, null))
-
-        runBlocking {
-            maintenanceJob.cancelAndJoin()
-            incomingQueueJob.cancelAndJoin()
-        }
-        for (queue in outgoingQueues.values) {
-            queue.clear()
-        }
-        for (sessionTable in sessionTablesBySessionKey.values) {
-            for (session in sessionTable.values) {
-                session.close()
-            }
-            sessionTable.clear()
-        }
-        sessionTablesBySessionKey.clear()
-        outgoingQueues.clear()
-        incomingQueue.clear()
-        logger.debug("KAnonProxy stopped")
-    }
-
     private fun packetHandler() {
+        Thread.currentThread().name = "Kanon Packethandler"
         logger.debug("Packet handler is started")
+        logger.debug("Session table size: ${sessionTablesBySessionKey.size}")
+        logger.debug("Incoming queue size: ${incomingQueue.size}")
+        logger.debug("Outgoing queues size: ${outgoingQueues.size}")
         while (isRunning.get()) {
             val queueEntry = incomingQueue.take()
             val packet = queueEntry.first
             if (packet == SentinelPacket) {
                 logger.debug("Received sentinel packet, stopping packet handler")
+                break
+            }
+            if (isRunning.get().not()) {
+                logger.debug("Proxy shutting down, skipping packet")
                 break
             }
             val clientAddress = queueEntry.second
@@ -118,6 +112,7 @@ class KAnonProxy(
             handlePacket(packet, clientAddress)
         }
         logger.debug("Packet handler is stopped")
+        incomingQueueJob.complete()
     }
 
     /**
@@ -203,25 +198,30 @@ class KAnonProxy(
                 transportHeader.destinationPort,
                 ipHeader.protocol,
             )
-        val session =
-            sessionTableBySessionKey.getOrPut(key) {
-                isNewSession = true
-                Session.getSession(
-                    ipHeader,
-                    transportHeader,
-                    payload,
-                    outgoingQueue,
-                    protector,
-                    this,
-                    clientAddress,
-                )
+        try {
+            val session =
+                sessionTableBySessionKey.getOrPut(key) {
+                    isNewSession = true
+                    Session.getNewSession(
+                        ipHeader,
+                        transportHeader,
+                        payload,
+                        outgoingQueue,
+                        protector,
+                        this,
+                        clientAddress,
+                    )
+                }
+            if (isNewSession) {
+                logger.info("New session: {} with payload size: {}", session, payload.size)
+            } else {
+                session.lastHeard = System.currentTimeMillis()
             }
-        if (isNewSession) {
-            logger.info("New session: {} with payload size: {}", session, payload.size)
-        } else {
-            session.lastHeard = System.currentTimeMillis()
+            session.incomingQueue.add(Packet(ipHeader, transportHeader, payload))
+        } catch (e: IllegalArgumentException) {
+            logger.warn("Got a non SYN packet $transportHeader when we had no session saved, sending RST")
+            outgoingQueue.put(createRstPacket(ipHeader, transportHeader as TcpHeader, TransmissionControlBlock()))
         }
-        session.incomingQueue.add(Packet(ipHeader, transportHeader, payload))
     }
 
     /**
@@ -331,11 +331,12 @@ class KAnonProxy(
             return SentinelPacket
         }
         val packet = outgoingQueue.take()
-        logger.debug("Proxy packets remaining: {}", outgoingQueue.size)
+        // logger.debug("Proxy packets remaining: {}", outgoingQueue.size)
         return packet
     }
 
     private suspend fun sessionMaintenanceThread() {
+        Thread.currentThread().name = "Session maintenance thread"
         logger.debug("Session maintenance thread is started")
         while (isRunning.get()) {
             val startTime = System.currentTimeMillis()
@@ -345,12 +346,7 @@ class KAnonProxy(
                         if (session is UdpSession) {
                             logger.warn("Session {} is stale, closing", session)
                             withContext(Dispatchers.IO) {
-                                try {
-                                    session.channel.close()
-                                } catch (e: Exception) {
-                                    logger.error("Error closing channel: ${e.message}")
-                                }
-                                sessionTableBySessionKey.remove(session.getKey())
+                                session.close(true)
                             }
                             continue
                         }
@@ -370,6 +366,7 @@ class KAnonProxy(
                 logger.warn("Retransmit thread took longer than one clock resolution")
             }
         }
+        maintenanceJob.complete()
         logger.warn("Session maintenance thread is (stop)ped")
     }
 
@@ -387,6 +384,21 @@ class KAnonProxy(
         outgoingQueue.clear()
     }
 
+    override fun removeSessionByClientAddress(clientAddress: InetSocketAddress) {
+        sessionTablesBySessionKey.remove(clientAddress)
+        outgoingQueues.remove(clientAddress)
+        val outgoingQueue = outgoingQueues[clientAddress]
+        if (outgoingQueue != null) {
+            outgoingQueue.put(SentinelPacket)
+            outgoingQueues.remove(clientAddress)
+        }
+        for (entry in incomingQueue) {
+            if (entry.second == clientAddress) {
+                incomingQueue.remove(entry)
+            }
+        }
+    }
+
     override fun removeSession(session: Session) {
         logger.debug("Removing session: {}", session)
         val sessionTableBySessionKey = sessionTablesBySessionKey[session.clientAddress] ?: return
@@ -401,6 +413,57 @@ class KAnonProxy(
                     LinkedBlockingDeque()
                 }
             outgoingQueue.put(SentinelPacket)
+            outgoingQueues.remove(session.clientAddress)
+        } else {
+            logger.debug("Still have ${sessionTableBySessionKey.size} sessions")
+            for (entry in sessionTableBySessionKey) {
+                val session = entry.value
+                val state = if (session is AnonymousTcpSession) {
+                    session.tcpStateMachine.tcpState.value.toString()
+                } else {
+                    ""
+                }
+                logger.debug("  $state ${entry.key}")
+            }
         }
+    }
+
+    override fun isRunning(): Boolean {
+        return isRunning.get()
+    }
+
+    fun stop() {
+        logger.debug("Stopping KAnonProxy")
+        isRunning.set(false)
+
+        // stopping handling of incoming packets
+        incomingQueue.put(Pair(SentinelPacket, null))
+
+        runBlocking {
+            logger.debug("Waiting for maintenance job to finish")
+            maintenanceJob.cancelAndJoin()
+            logger.debug("maintenance job finished")
+            logger.debug("Waiting for incomingQueue job to finish")
+            incomingQueueJob.cancelAndJoin()
+            logger.debug("incoming queue job finished")
+        }
+
+        for (sessionTable in sessionTablesBySessionKey.values) {
+            for (session in sessionTable.values) {
+                logger.debug("Closing session: $session")
+                session.close()
+                logger.debug("Session closed: $session")
+            }
+            sessionTable.clear()
+            logger.debug("Sessions cleared")
+        }
+        for (queue in outgoingQueues.values) {
+            queue.clear()
+        }
+        logger.debug("outgoing queues cleared")
+        sessionTablesBySessionKey.clear()
+        outgoingQueues.clear()
+        incomingQueue.clear()
+        logger.debug("KAnonProxy stopped")
     }
 }

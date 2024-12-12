@@ -15,12 +15,6 @@ object LibC {
         flags: Int,
     ): Int
 
-    external fun read(
-        fd: Int,
-        data: ByteArray,
-        len: NativeLong,
-    ): Int
-
     external fun ioctl(
         fd: Int,
         cmd: NativeLong,

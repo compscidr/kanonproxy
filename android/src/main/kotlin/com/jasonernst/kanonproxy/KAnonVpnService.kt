@@ -9,18 +9,22 @@ import androidx.preference.PreferenceManager
 import com.jasonernst.icmp.android.IcmpAndroid
 import com.jasonernst.kanonproxy.model.KAnonViewModel
 import com.jasonernst.kanonproxy.ui.VpnUiService
+import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.packetdumper.serverdumper.ConnectedUsersChangedCallback
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import org.slf4j.LoggerFactory
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.Socket
 
-class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback {
+class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback, VpnProtector {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val binder = LocalBinder()
 
     private val packetDumper = PcapNgTcpServerPacketDumper(callback = this, isSimple = false)
     private lateinit var viewModel: KAnonViewModel
 
-    private val server = Server(IcmpAndroid)
+    private val server = Server(IcmpAndroid, protector = this)
     private lateinit var client: AndroidClient
     private lateinit var vpnFileDescriptor: ParcelFileDescriptor
 
@@ -59,7 +63,12 @@ class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback
         //.addRoute("2000::", 3) // https://wiki.strongswan.org/issues/1261
 
         vpnFileDescriptor = builder.establish() ?: throw RuntimeException("Error establishing VPN")
-        client = AndroidClient(vpnFileDescriptor = vpnFileDescriptor, packetDumper = packetDumper)
+
+        //val onlyDestination = listOf(InetAddress.getByName("8.8.8.8"))
+        val onlyDestination = emptyList<InetAddress>()
+        // val onlyProtocols = listOf(IpType.UDP.value)
+        val onlyProtocols = emptyList<UByte>()
+        client = AndroidClient(vpnFileDescriptor = vpnFileDescriptor, packetDumper = packetDumper, onlyDestinations = onlyDestination, onlyProtocols = onlyProtocols)
         client.connect()
         viewModel.serviceStarted()
     }
@@ -81,7 +90,7 @@ class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback
         viewModel.pcapServerStopped()
     }
 
-    override fun onBind(intent: Intent): IBinder? {
+    override fun onBind(intent: Intent): IBinder {
         logger.debug("ON BIND CALLED")
         return binder
     }
@@ -100,5 +109,17 @@ class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback
     override fun onConnectedUsersChanged(connectedUsers: List<String>) {
         logger.debug("Connected users changed: {}", connectedUsers)
         viewModel.pcapUsersChanged(connectedUsers)
+    }
+
+    override fun protectSocketFd(socket: Int) {
+        (this as VpnService).protect(socket)
+    }
+
+    override fun protectUDPSocket(socket: DatagramSocket) {
+        (this as VpnService).protect(socket)
+    }
+
+    override fun protectTCPSocket(socket: Socket) {
+        (this as VpnService).protect(socket)
     }
 }

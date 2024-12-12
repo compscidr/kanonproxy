@@ -2,6 +2,7 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.BidirectionalByteChannel
 import com.jasonernst.kanonproxy.ChangeRequest
+import com.jasonernst.kanonproxy.ChangeRequest.Companion.CHANGE_OPS
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
@@ -13,7 +14,6 @@ import com.jasonernst.knet.transport.tcp.options.TcpOptionTimestamp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -130,16 +130,6 @@ class TcpStateMachine(
         logger.debug("Active open complete")
     }
 
-    // meant as a hard stop of any jobs that are running - mostly for tests that put things into
-    // a weird state
-    fun cleanup() {
-        runBlocking {
-            rtoJob?.cancelAndJoin()
-            timeWaitJob?.cancelAndJoin()
-            delayedAckJob?.cancelAndJoin()
-        }
-    }
-
     /**
      * Given the current state of the session, this method will use the incoming packet headers
      * and the payload to determine the next state, and then return the appropriate packet(s) to
@@ -239,6 +229,10 @@ class TcpStateMachine(
 
         // run this outside of the mutex since it also requires locking
         val encapsulatedPackets = encapsulateOutgoingData(swapSourceDestination, false)
+        logger.debug("Encapsulted ${encapsulatedPackets.size} packets")
+        for (packet in encapsulatedPackets) {
+            logger.debug("  packet: $packet")
+        }
         retransmitQueue.addAll(encapsulatedPackets)
         return packets + encapsulatedPackets
     }
@@ -841,6 +835,7 @@ class TcpStateMachine(
             logger.debug("Received ACK for FIN in FIN_WAIT1 state, transitioning to FIN_WAIT2: $tcpHeader")
             transmissionControlBlock!!.fin_acked = true
             tcpState.value = TcpState.FIN_WAIT_2
+            stopRtoAndDelayedAck()
         } else {
             logger.debug(
                 "didn't get ACK for FIN, expecting " +
@@ -1709,6 +1704,15 @@ class TcpStateMachine(
                 removeAckedPacketsFromRetransmit()
                 updateCongestionState()
                 updateSendWindow(tcpHeader)
+
+                if (session is AnonymousTcpSession && session.isConnecting.get().not()) {
+                    logger.debug("Setting remote side readable again since we likely have buffer space")
+                    synchronized(session.changeRequests) {
+                        session.changeRequests.add(ChangeRequest(session.channel, CHANGE_OPS, OP_READ))
+                    }
+                    session.selector.wakeup()
+                }
+
                 return true
             } else {
                 logger.debug("Received unacceptable ACK in ${tcpState.value} state")
@@ -1944,7 +1948,7 @@ class TcpStateMachine(
 
                 outgoingMutex.withLock {
                     if (requiresLock) {
-                        logger.warn("ENCAP PACKETS TAKING LOCK")
+                        // logger.warn("ENCAP PACKETS TAKING LOCK")
                         tcbMutex.lock()
                     }
                     do {
@@ -1970,7 +1974,7 @@ class TcpStateMachine(
                             outgoingBuffer.compact()
                             if (requiresLock) {
                                 tcbMutex.unlock()
-                                logger.warn("ENCAP PACKETS LOCK RELEASED")
+                                // logger.warn("ENCAP PACKETS LOCK RELEASED")
                             }
                             return@runBlocking packets
                         }
@@ -2042,32 +2046,36 @@ class TcpStateMachine(
                     } while (outgoingBuffer.hasRemaining())
                     if (requiresLock) {
                         tcbMutex.unlock()
-                        logger.warn("ENCAP PACKETS LOCK RELEASED")
+                        // logger.warn("ENCAP PACKETS LOCK RELEASED")
                     }
 
                     if (outgoingBuffer.remaining() > 0 && !session.isConnecting.get()) {
                         // let the channel know we're ready to read again
-                        if (session.channel is SocketChannel) {
-                            logger.debug("Adding CHANGE request to read")
-                            synchronized(session.changeRequests) {
-                                session.changeRequests.add(
-                                    ChangeRequest(
-                                        session.channel as SocketChannel,
-                                        ChangeRequest.CHANGE_OPS,
-                                        OP_READ,
-                                    ),
-                                )
+                        if (session.channel is SocketChannel && session.isConnecting.get().not()) {
+                            if (session.outgoingQueue.isEmpty()) {
+                                logger.debug("Adding CHANGE request to read")
+                                synchronized(session.changeRequests) {
+                                    session.changeRequests.add(
+                                        ChangeRequest(
+                                            session.channel as SocketChannel,
+                                            CHANGE_OPS,
+                                            OP_READ,
+                                        ),
+                                    )
+                                }
                             }
                         } else if (session.channel is DatagramChannel) {
-                            logger.debug("Adding CHANGE request to read")
-                            synchronized(session.changeRequests) {
-                                session.changeRequests.add(
-                                    ChangeRequest(
-                                        session.channel as DatagramChannel,
-                                        ChangeRequest.CHANGE_OPS,
-                                        OP_READ,
-                                    ),
-                                )
+                            // logger.debug("Adding CHANGE request to read")
+                            if (session.outgoingQueue.isEmpty()) {
+                                synchronized(session.changeRequests) {
+                                    session.changeRequests.add(
+                                        ChangeRequest(
+                                            session.channel as DatagramChannel,
+                                            CHANGE_OPS,
+                                            OP_READ,
+                                        ),
+                                    )
+                                }
                             }
                         }
                         session.selector.wakeup()
@@ -2122,6 +2130,8 @@ class TcpStateMachine(
         if (rtoJob == null) {
             rtoJob =
                 CoroutineScope(Dispatchers.IO).launch {
+                    Thread.currentThread().name = "RTO: ${session.getKey()}"
+                    logger.debug("Starting RTO job for session $session")
                     val rtoExpiry = ((transmissionControlBlock?.rto ?: 0.0) * 1000L).toLong()
                     if (rtoExpiry == 0L) {
                         logger.error("RTO is 0, shouldn't have got here")
@@ -2170,6 +2180,8 @@ class TcpStateMachine(
         if (delayedAckJob == null) {
             delayedAckJob =
                 CoroutineScope(Dispatchers.IO).launch {
+                    Thread.currentThread().name = "latestACK: ${session.getKey()}"
+                    logger.debug("Starting latestACK job for session $session")
                     delay(500)
                     if (latestAck != null) {
                         session.returnQueue.add(latestAck!!)
@@ -2251,7 +2263,8 @@ class TcpStateMachine(
         }
         timeWaitJob =
             CoroutineScope(Dispatchers.IO).launch {
-                logger.debug("TIME_WAIT timer started")
+                Thread.currentThread().name = "Time-wait: ${session.getKey()}"
+                logger.debug("TIME_WAIT timer started for {}", session)
                 delay((2 * MSL * 1000).toLong())
                 tcbMutex.withLock {
                     if (tcpState.value == TcpState.TIME_WAIT) {
@@ -2265,13 +2278,20 @@ class TcpStateMachine(
             }
     }
 
-    fun stopRtoAndTimeWait() {
-        runBlocking {
-            logger.debug("Stopping RTO job")
-            rtoJob?.cancelAndJoin()
-            logger.debug("Stopped. Stopping timewait job")
-            timeWaitJob?.cancelAndJoin()
-            logger.debug("Stopped.")
-        }
+    fun stopRtoAndDelayedAck() {
+        logger.debug("Stopping timers")
+        rtoJob?.cancel()
+        delayedAckJob?.cancel()
+        rtoJob = null
+        delayedAckJob = null
+    }
+
+    fun stopJobs() {
+        rtoJob?.cancel()
+        timeWaitJob?.cancel()
+        delayedAckJob?.cancel()
+        rtoJob = null
+        timeWaitJob = null
+        delayedAckJob = null
     }
 }
