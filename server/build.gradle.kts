@@ -28,6 +28,14 @@ dependencies {
     runtimeOnly(libs.logback.classic)
 }
 
+version = "0.0.0-SNAPSHOT"
+gitVersioning.apply {
+    refs {
+        branch(".+") { version = "\${ref}-SNAPSHOT" }
+        tag("v(?<version>.*)") { version = "\${ref.version}" }
+    }
+}
+
 // see: https://github.com/vanniktech/gradle-maven-publish-plugin/issues/747#issuecomment-2066762725
 // and: https://github.com/GradleUp/nmcp
 nmcp {
