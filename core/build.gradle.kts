@@ -82,12 +82,12 @@ nmcp {
 
 // see: https://vanniktech.github.io/gradle-maven-publish-plugin/central/#configuring-the-pom
 mavenPublishing {
-    coordinates("com.jasonernst.kanonproxy", "kanonproxy", version.toString())
+    coordinates("com.jasonernst.kanonproxy", "kanonproxy-core", version.toString())
     pom {
         name = "kanonproxy"
-        description = "An anonymous proxy written in kotlin."
+        description = "An anonymous proxy library written in kotlin."
         inceptionYear = "2024"
-        url = "https://github.com/compscidr/kanonproxynet"
+        url = "https://github.com/compscidr/kanonproxy"
         licenses {
             license {
                 name = "GPL-3.0"
