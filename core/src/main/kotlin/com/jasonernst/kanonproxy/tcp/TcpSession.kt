@@ -55,9 +55,13 @@ abstract class TcpSession(
         val buffer = ByteBuffer.wrap(payload)
         while (buffer.hasRemaining()) {
             tcpStateMachine.enqueueOutgoingData(buffer)
-            val packets = tcpStateMachine.encapsulateOutgoingData(requiresLock = true)
-            returnQueue.addAll(packets)
         }
+        val packets = tcpStateMachine.encapsulateOutgoingData(requiresLock = true)
+        logger.debug("Encapsulated ${packets.size} packets")
+        for (packet in packets) {
+            logger.debug("  packet: $packet")
+        }
+        returnQueue.addAll(packets)
     }
 
     /**
@@ -72,7 +76,10 @@ abstract class TcpSession(
         swapSourceAndDestination: Boolean = true,
         requiresLock: Boolean,
     ): Packet? {
-        if (tcpStateMachine.tcpState.value == TcpState.CLOSED || tcpStateMachine.tcpState.value == TcpState.TIME_WAIT) {
+        if (tcpStateMachine.tcpState.value == TcpState.CLOSED ||
+            tcpStateMachine.tcpState.value == TcpState.TIME_WAIT ||
+            tcpStateMachine.tcpState.value == TcpState.LAST_ACK
+        ) {
             // prevent going into all this if we're already closed
             return null
         }
@@ -141,6 +148,7 @@ abstract class TcpSession(
                     TcpState.SYN_RECEIVED, TcpState.ESTABLISHED -> {
                         logger.debug("Transitioning to FIN_WAIT_1, sending FIN: $finPacket")
                         tcpStateMachine.tcpState.value = TcpState.FIN_WAIT_1
+                        tcpStateMachine.stopRtoAndDelayedAck()
                         return@runBlocking finPacket
                     }
 

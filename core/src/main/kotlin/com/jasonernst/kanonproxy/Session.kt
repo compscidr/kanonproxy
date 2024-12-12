@@ -13,14 +13,16 @@ import com.jasonernst.knet.network.icmp.IcmpFactory
 import com.jasonernst.knet.network.ip.IpHeader
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.transport.TransportHeader
+import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.selects.select
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -52,17 +54,17 @@ abstract class Session(
     abstract val channel: ByteChannel
     protected val readBuffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
     var lastHeard = System.currentTimeMillis()
-    private val outgoingJob = SupervisorJob() // https://stackoverflow.com/a/63407811
-    protected val outgoingScope = CoroutineScope(Dispatchers.IO + outgoingJob)
+    protected lateinit var outgoingJob: CompletableJob // https://stackoverflow.com/a/63407811
+    protected lateinit var outgoingScope: CoroutineScope
 
     val incomingQueue = LinkedBlockingDeque<Packet>()
     val outgoingQueue = LinkedBlockingDeque<ByteBuffer>()
-    private val incomingJob = SupervisorJob()
-    private val incomingScope = CoroutineScope(Dispatchers.IO + incomingJob)
-    private val isRunning = AtomicBoolean(true)
+    private lateinit var incomingJob: CompletableJob
+    private lateinit var incomingScope: CoroutineScope
+    protected val isRunning = AtomicBoolean(true)
 
-    private val channelJob = SupervisorJob()
-    private val channelScope = CoroutineScope(Dispatchers.IO + channelJob)
+    private lateinit var selectorJob: CompletableJob
+    private lateinit var selectorScope: CoroutineScope
 
     val isConnecting = AtomicBoolean(true)
     val selector: Selector = Selector.open()
@@ -80,7 +82,7 @@ abstract class Session(
         /**
          * Depending on the protocol, returns either a UDP or TCP session
          */
-        fun getSession(
+        fun getNewSession(
             initialIPHeader: IpHeader,
             initialTransportHeader: TransportHeader,
             initialPayload: ByteArray,
@@ -102,6 +104,10 @@ abstract class Session(
                     )
                 }
                 IpType.TCP.value -> {
+                    val tcpHeader = initialTransportHeader as TcpHeader
+                    if (tcpHeader.isSyn().not()) {
+                        throw IllegalArgumentException("Can't start TcpSession without a SYN packet")
+                    }
                     AnonymousTcpSession(
                         initialIPHeader,
                         initialTransportHeader,
@@ -124,6 +130,9 @@ abstract class Session(
         "Session(clientAddress='$clientAddress' sourceAddress='${getSourceAddress()}', sourcePort=${getSourcePort()}, destinationAddress='${getDestinationAddress()}', destinationPort=${getDestinationPort()}, protocol=${getProtocol()})"
 
     fun readyToWrite() {
+        if (isConnecting.get()) {
+            logger.debug("Still connecting, don't switch to write mode yet")
+        }
         if (channel is BidirectionalByteChannel) {
             return
         }
@@ -137,9 +146,24 @@ abstract class Session(
     }
 
     fun startSelector() {
-        channelScope.launch {
+        outgoingJob = SupervisorJob()
+        outgoingScope = CoroutineScope(Dispatchers.IO + outgoingJob)
+        incomingJob = SupervisorJob()
+        incomingScope = CoroutineScope(Dispatchers.IO + incomingJob)
+        selectorJob = SupervisorJob()
+        selectorScope = CoroutineScope(Dispatchers.IO + selectorJob)
+        selectorScope.launch {
+            if (isRunning.get().not()) {
+                logger.debug("Session shutting down before starting")
+                return@launch
+            }
+            val oldThreadName = Thread.currentThread().name
             Thread.currentThread().name = "Selector: ${getKey()}"
             while (isRunning.get()) {
+                if (sessionManager.isRunning().not()) {
+                    logger.warn("Session manager is no longer running, shutting down")
+                    break
+                }
                 try {
                     // Process any pending changes
                     synchronized(changeRequests) {
@@ -174,15 +198,21 @@ abstract class Session(
                     if (numKeys > 0) {
                         // logger.warn("SELECT RETURNED: $numKeys")
                     } else {
-                        if (session is AnonymousTcpSession && session.isConnecting.get()) {
+                        if (session is AnonymousTcpSession && session.isConnecting.get() && session.connectTime != 0L) {
                             val currentTime = System.currentTimeMillis()
                             val difference = currentTime - session.connectTime
                             if (difference > STALE_SESSION_MS) {
-                                val error = "Timed out trying to reach remote on TCP connect"
+                                val error =
+                                    "Timed out trying to reach remote on TCP connect. " +
+                                        "Connect time: ${session.connectTime}, currentTime: " +
+                                        "$currentTime, difference: $difference"
                                 logger.error(error)
-                                handleExceptionOnRemoteChannel(Exception(error))
-                                selector.close()
-                                break
+                                selector.keys().clear()
+                                session.reconnectRemoteChannel()
+
+                                // handleExceptionOnRemoteChannel(Exception(error))
+                                // selector.close()
+                                // break
                             }
                         }
                     }
@@ -194,7 +224,7 @@ abstract class Session(
                 try {
                     val selectedKeys = selector.selectedKeys()
                     if (selectedKeys.size > 0) {
-                        // logger.warn("SELECT: $selectedKeys")
+                        logger.warn("SELECT: $selectedKeys")
                     }
                     val keyStream = selectedKeys.parallelStream()
                     keyStream
@@ -206,18 +236,23 @@ abstract class Session(
                                 // could do a while loop here, but others might starve
                                 if (outgoingQueue.isNotEmpty()) {
                                     val queue = outgoingQueue.take()
+                                    logger.debug("Writing ${queue.limit()} bytes to remote channel")
                                     while (queue.hasRemaining()) {
                                         channel.write(queue)
                                     }
                                 }
                                 if (outgoingQueue.isNotEmpty()) {
+                                    logger.debug("Outgoing queue not empty, continuing interest in writes")
                                     it.interestOps(SelectionKey.OP_WRITE)
                                 } else {
+                                    logger.debug("Queue empty, returning to read mode")
                                     it.interestOps(SelectionKey.OP_READ)
                                 }
                             }
                             if (it.isReadable && it.isValid) {
+                                // logger.warn("READABLE!!!!")
                                 if (!read()) {
+                                    logger.warn("Remote read failed, closing selector")
                                     it.interestOps(0)
                                     selector.close()
                                 }
@@ -239,7 +274,6 @@ abstract class Session(
                                             } else {
                                                 it.interestOps(SelectionKey.OP_READ)
                                             }
-                                            // startIncomingHandling()
                                         } else {
                                             logger.debug("Finishing connection, still in progress")
                                             // will retry again when the selector wakes up
@@ -266,8 +300,14 @@ abstract class Session(
                 } catch (e: ClosedSelectorException) {
                     logger.warn("Selector closed, probably shutting session down")
                     break
+                } catch (e: Exception) {
+                    logger.warn("Exception trying write to remote channel, probably shutting down")
+                    break
                 }
             }
+            logger.warn("selector job complete")
+            Thread.currentThread().name = oldThreadName
+            selectorJob.complete()
         }
     }
 
@@ -322,6 +362,11 @@ abstract class Session(
                 mtu.toInt(),
             )
         returnQueue.add(response)
+        try {
+            selector.close()
+        } catch (e: Exception) {
+            logger.warn("Error closing selector")
+        }
     }
 
     /**
@@ -331,6 +376,7 @@ abstract class Session(
      */
     fun startIncomingHandling() {
         incomingScope.launch {
+            val oldThreadName = Thread.currentThread().name
             Thread.currentThread().name = "Incoming handler: ${getKey()}"
             while (isRunning.get()) {
                 val packet = incomingQueue.take()
@@ -341,6 +387,9 @@ abstract class Session(
                 }
                 handlePacketFromClient(packet)
             }
+            logger.debug("Incoming handler complete")
+            Thread.currentThread().name = oldThreadName
+            incomingJob.complete()
         }
     }
 
@@ -366,30 +415,68 @@ abstract class Session(
     ) {
         logger.debug("Closing session")
         isRunning.set(false)
-        if (this is AnonymousTcpSession) {
-            try {
-                channel.socket().close()
-            } catch (e: Exception) {
-                logger.error("Error closing socket", e)
-            }
-        }
         try {
-            channel.close()
-        } catch (e: Exception) {
-            logger.error("Failed to close channel", e)
-        }
-        try {
+            logger.debug("Closing selector")
             selector.close()
+            logger.debug("Selector closed")
         } catch (e: Exception) {
             logger.error("Failed to close selector", e)
         }
+        if (this is AnonymousTcpSession) {
+            try {
+                logger.debug("Closing remote tcp channel")
+                channel.socket().close()
+                logger.debug("Remote tcp channel closed")
+            } catch (e: Exception) {
+                logger.error("Error closing socket", e)
+            }
+        } else {
+            try {
+                logger.debug("Closing remote UDP channel")
+                channel.close()
+                logger.debug("Remote UDP channel closed")
+            } catch (e: Exception) {
+                logger.error("Failed to close channel", e)
+            }
+        }
+        logger.debug("Stopping incoming queue thread with sentinel packet")
         incomingQueue.add(SentinelPacket)
         if (removeSession) {
+            logger.debug("Removing this session from session manager")
             // important we remove before the incoming job is cancelled because
             // the handlers sometimes call close and we want' to make sure
             // the session manager cleans up before the thread is cancelled.
             sessionManager.removeSession(this)
+            logger.debug("Session removed")
         }
+        runBlocking {
+            logger.debug("Stopping outgoing job")
+            outgoingJob.cancelAndJoin()
+            logger.debug("Outgoing job stopped")
+
+            if (isIncomingJob) {
+                logger.debug("Not cancelling incoming job because we're currently running in it")
+            } else {
+                logger.debug("Stopping incoming job")
+                incomingJob.cancelAndJoin()
+                logger.debug("Incoming job stopped")
+            }
+
+            logger.debug("Incoming job stopped. Stopping channel job")
+            selectorJob.cancelAndJoin()
+            logger.debug("Channel job stopped")
+        }
+
+        if (this is TcpSession) {
+            this.tcpStateMachine.stopJobs()
+        }
+
+        outgoingScope.cancel()
+        incomingScope.cancel()
+        selectorScope.cancel()
+        logger.debug("Session closed")
+
+        // this must only be done after the session has properly stopped its jobs
         if (packet != null) {
             logger.debug("Re-establishing session")
             // the only time this should be the case is when we're re-establishing a session
@@ -400,26 +487,13 @@ abstract class Session(
             // the thread will be cancelled before we handle the packet
             sessionManager.handlePackets(listOf(packet), clientAddress)
         }
-        runBlocking {
-            logger.debug("Stopping outgoing job")
-            outgoingJob.cancelAndJoin()
-            logger.debug("Outgoing job stopped. Stopping incoming job")
+    }
 
-            if (isIncomingJob) {
-                logger.debug("Not cancelling incoming job because we're currently running in it")
-            } else {
-                incomingJob.cancelAndJoin()
-            }
-
-            logger.debug("Incoming job stopped. Stopping channel job")
-            channelJob.cancelAndJoin()
-            logger.debug("Channel job stopped")
+    fun testCloseChannel() {
+        try {
+            channel.close()
+        } catch (e: Exception) {
+            logger.warn("Failed to close channel")
         }
-
-        if (this is TcpSession) {
-            this.tcpStateMachine.stopRtoAndTimeWait()
-        }
-
-        logger.debug("Session closed")
     }
 }

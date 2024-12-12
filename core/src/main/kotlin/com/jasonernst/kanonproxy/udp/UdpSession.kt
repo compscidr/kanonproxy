@@ -19,7 +19,7 @@ import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
-import java.nio.channels.SelectionKey.OP_READ
+import java.nio.channels.SelectionKey.OP_WRITE
 import java.util.concurrent.LinkedBlockingDeque
 
 class UdpSession(
@@ -51,6 +51,11 @@ class UdpSession(
     init {
         startSelector()
         outgoingScope.launch {
+            if (isRunning.get().not()) {
+                logger.debug("Session shutting down before starting")
+                return@launch
+            }
+            Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             try {
                 logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 protector.protectUDPSocket(channel.socket())
@@ -60,13 +65,15 @@ class UdpSession(
                 logger.debug("UDP Connected")
                 isConnecting.set(false)
                 synchronized(changeRequests) {
-                    changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, OP_READ))
+                    logger.debug("Registering for WRITE")
+                    changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, OP_WRITE))
                 }
                 startIncomingHandling()
             } catch (e: Exception) {
                 logger.error("ERROR ON UDP CONNECT $e")
                 handleExceptionOnRemoteChannel(e)
             }
+            outgoingJob.complete()
         }
     }
 
@@ -76,6 +83,8 @@ class UdpSession(
             val len = handleReturnTrafficLoop(readBuffer.capacity())
             if (len < 0) {
                 closed = true
+            } else if (len > 0) {
+                logger.debug("Read $len bytes")
             }
         } catch (e: Exception) {
             closed = true

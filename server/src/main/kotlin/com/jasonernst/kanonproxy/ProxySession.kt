@@ -36,26 +36,36 @@ class ProxySession(
     }
 
     private fun readFromProxyWriteToClient() {
+        Thread.currentThread().name = "ReadProxy: $clientAddress"
         while (isRunning.get()) {
-            logger.debug("Waiting for response from proxy for client: $clientAddress")
+            // logger.debug("Waiting for response from proxy for client: $clientAddress")
             val response = kAnonProxy.takeResponse(clientAddress)
             if (response is SentinelPacket) {
                 logger.warn("Received sentinel packet, stopping ProxySession: $clientAddress")
-                isRunning.set(false)
                 break
             }
-            logger.debug("Received response from proxy for client: $clientAddress, sending datagram back")
+            // logger.debug("Received response from proxy for client: $clientAddress, sending datagram back")
             val buffer = response.toByteArray()
             val datagramPacket = DatagramPacket(buffer, buffer.size, clientAddress)
-            socket.send(datagramPacket)
+            try {
+                socket.send(datagramPacket)
+            } catch (e: Exception) {
+                logger.debug("Error trying to write to proxy server, probably shutting down: $e")
+                break
+            }
         }
         sessionManager.removeSession(clientAddress)
+        isRunning.set(false)
+        logger.info("Proxy session $clientAddress has been stopped")
+        readFromProxyJob.complete()
     }
 
     fun stop() {
+        logger.debug("Stopping proxy session")
         isRunning.set(false)
         runBlocking {
             readFromProxyJob.cancelAndJoin()
         }
+        logger.debug("Proxy session stopped")
     }
 }

@@ -61,7 +61,7 @@ class AnonymousTcpSession(
 
     override fun handlePacketFromClient(packet: Packet) {
         val responsePackets = tcpStateMachine.processHeaders(packet.ipHeader!!, packet.nextHeaders!! as TcpHeader, packet.payload!!)
-        logger.debug("RETURN PACKETS size: {}", responsePackets.size)
+        // logger.debug("RETURN PACKETS size: {}", responsePackets.size)
         returnQueue.addAll(responsePackets)
 //        for (response in responsePackets) {
 //            logger.debug("RETURN PACKET: {}", response.nextHeaders)
@@ -80,50 +80,78 @@ class AnonymousTcpSession(
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
         outgoingScope.launch {
+            if (isRunning.get().not()) {
+                logger.debug("Session shutting down before starting")
+                return@launch
+            }
             startIncomingHandling()
+            val oldThreadName = Thread.currentThread().name
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
-            try {
-                logger.debug("TCP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
-                // channel.socket().keepAlive = false
-                // channel.socket().soTimeout = 0
-                channel.socket().reuseAddress = true
-                channel.configureBlocking(false)
-                connectTime = System.currentTimeMillis()
-                val result =
-                    channel.connect(
-                        InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()),
-                    )
-                if (result) {
-                    // this can either be connected immediately, or we'll have to wait for the selector
-                    logger.debug("TCP connected to ${initialIpHeader.destinationAddress}")
-                    isConnecting.set(false)
 
-                    // we may have got data while waiting to connect
-                    if (outgoingQueue.isNotEmpty()) {
-                        logger.debug("Adding CHANGE request to write")
-                        synchronized(changeRequests) {
-                            changeRequests.add(
-                                ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE),
-                            )
-                        }
-                    } else {
-                        logger.debug("Adding CHANGE request to read")
-                        synchronized(changeRequests) {
-                            changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
-                        }
+            connect()
+
+            logger.debug("outgoing job complete")
+            Thread.currentThread().name = oldThreadName
+            outgoingJob.complete()
+        }
+    }
+
+    fun connect() {
+        try {
+            logger.debug("TCP connecting to {}:{}", initialIpHeader!!.destinationAddress, initialTransportHeader!!.destinationPort)
+            channel.socket().keepAlive = false
+            // channel.socket().soTimeout = 0
+            // channel.socket().reuseAddress = true
+            channel.configureBlocking(false)
+            connectTime = System.currentTimeMillis()
+            val result =
+                channel.connect(
+                    InetSocketAddress(initialIpHeader!!.destinationAddress, initialTransportHeader!!.destinationPort.toInt()),
+                )
+            if (result) {
+                // this can either be connected immediately, or we'll have to wait for the selector
+                logger.debug("TCP connected to ${initialIpHeader!!.destinationAddress}")
+                isConnecting.set(false)
+
+                // we may have got data while waiting to connect
+                if (outgoingQueue.isNotEmpty()) {
+                    logger.debug("Adding CHANGE request to write")
+                    synchronized(changeRequests) {
+                        changeRequests.add(
+                            ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE),
+                        )
                     }
                 } else {
-                    logger.debug("CONNECT called, waiting for selector")
-                    logger.debug("Adding CHANGE request to CONNECT")
+                    logger.debug("Adding CHANGE request to read")
                     synchronized(changeRequests) {
-                        changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_CONNECT))
+                        changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
                     }
                 }
-                selector.wakeup()
-            } catch (e: Exception) {
-                handleExceptionOnRemoteChannel(e)
+            } else {
+                logger.debug("CONNECT called, waiting for selector")
+                channel.finishConnect()
+                logger.debug("Adding CHANGE request to CONNECT")
+                synchronized(changeRequests) {
+                    changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_CONNECT))
+                }
             }
+            selector.wakeup()
+        } catch (e: Exception) {
+            logger.error("Error on trying to connect: $e")
+            handleExceptionOnRemoteChannel(e)
         }
+    }
+
+    fun reconnectRemoteChannel(): Boolean {
+        logger.debug("Trying to reconnect to remote channel")
+        try {
+            channel.close()
+            channel = SocketChannel.open()
+            connect()
+        } catch (e: Exception) {
+            return false
+        }
+        return true
     }
 
     override fun read(): Boolean {

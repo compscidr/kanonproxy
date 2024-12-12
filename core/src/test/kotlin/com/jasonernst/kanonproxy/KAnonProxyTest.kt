@@ -5,12 +5,14 @@ import com.jasonernst.kanonproxy.KAnonProxy.Companion.STALE_SESSION_MS
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.network.ip.v4.Ipv4Header
+import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.udp.UdpHeader
 import com.jasonernst.testservers.server.UdpEchoServer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
@@ -126,6 +128,61 @@ class KAnonProxyTest {
                 payload,
             )
         kAnonProxy.handlePackets(listOf(packet), clientAddress)
+        kAnonProxy.stop()
+    }
+
+    @Test fun twoTcpSessions() {
+        val kAnonProxy = KAnonProxy(IcmpLinux)
+        kAnonProxy.start()
+
+        val clientAddress = InetSocketAddress("localhost", 8080)
+        val tcpHeader = TcpHeader(syn = true, destinationPort = 80u)
+        val ipHeader =
+            Ipv4Header(
+                sourceAddress = Inet4Address.getByName("127.0.0.1") as Inet4Address,
+                destinationAddress = Inet4Address.getByName("xkcd.com") as Inet4Address,
+                protocol = IpType.TCP.value,
+                totalLength =
+                    (
+                        Ipv4Header.IP4_MIN_HEADER_LENGTH.toUShort() +
+                            tcpHeader.getHeaderLength()
+                    ).toUShort(),
+            )
+        kAnonProxy.handlePackets(listOf(Packet(ipHeader, tcpHeader, ByteArray(0))), clientAddress)
+
+        val response = kAnonProxy.takeResponse(clientAddress)
+        assertTrue(response.nextHeaders is TcpHeader)
+        val responseTcpHeader = response.nextHeaders as TcpHeader
+        assertTrue(responseTcpHeader.isSyn())
+        assertTrue(responseTcpHeader.isAck())
+
+        assertEquals(1, kAnonProxy.sessionTablesBySessionKey.size)
+        val sessionTable = kAnonProxy.sessionTablesBySessionKey[clientAddress]
+        assertEquals(1, sessionTable?.size)
+        sessionTable?.values?.forEach { session ->
+            session.close()
+        }
+
+        val tcpHeader2 = TcpHeader(syn = true, destinationPort = 80u)
+        val ipHeader2 =
+            Ipv4Header(
+                sourceAddress = Inet4Address.getByName("127.0.0.1") as Inet4Address,
+                destinationAddress = Inet4Address.getByName("xkcd.com") as Inet4Address,
+                protocol = IpType.TCP.value,
+                totalLength =
+                    (
+                        Ipv4Header.IP4_MIN_HEADER_LENGTH.toUShort() +
+                            tcpHeader.getHeaderLength()
+                    ).toUShort(),
+            )
+        kAnonProxy.handlePackets(listOf(Packet(ipHeader2, tcpHeader2, ByteArray(0))), clientAddress)
+
+        val response2 = kAnonProxy.takeResponse(clientAddress)
+        assertTrue(response2.nextHeaders is TcpHeader)
+        val responseTcpHeader2 = response2.nextHeaders as TcpHeader
+        assertTrue(responseTcpHeader2.isSyn())
+        assertTrue(responseTcpHeader2.isAck())
+
         kAnonProxy.stop()
     }
 }

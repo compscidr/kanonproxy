@@ -1,11 +1,12 @@
 package com.jasonernst.kanonproxy
 
-import com.jasonernst.kanonproxy.tuntap.TunTapDevice
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.Packet.Companion.parseStream
 import com.jasonernst.knet.SentinelPacket
+import com.jasonernst.packetdumper.AbstractPacketDumper
+import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.ethernet.EtherType
-import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,77 +15,79 @@ import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
-class Client(
+/**
+ * Abstract client that can support Linux, Android, etc implementations that are specific to their
+ * tun/tap device.
+ */
+abstract class Client(
     private val socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
+    private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
+    private val onlyDestinations: List<InetAddress> = emptyList(),
+    private val onlyProtocols: List<UByte> = emptyList(),
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val socket = DatagramSocket()
-    private val tunTapDevice = TunTapDevice()
 
     private val isConnected = AtomicBoolean(false)
-
-    private val readFromTunJob = SupervisorJob()
-    private val readFromTunJobScope = CoroutineScope(Dispatchers.IO + readFromTunJob)
-    private val readFromProxyJob = SupervisorJob()
-    private val readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)
-
-    private val packetDumper = PcapNgTcpServerPacketDumper(isSimple = false)
+    private lateinit var readFromTunJob: CompletableJob
+    private lateinit var readFromTunJobScope: CoroutineScope
+    private lateinit var readFromProxyJob: CompletableJob
+    private lateinit var readFromProxyJobScope: CoroutineScope
 
     companion object {
         private const val MAX_STREAM_BUFFER_SIZE = 1048576 // max we can write into the stream without parsing
         private const val MAX_RECEIVE_BUFFER_SIZE = 1500 // max amount we can recv in one read (should be the MTU or bigger probably)
-
-        @JvmStatic
-        fun main(args: Array<String>) {
-            val client =
-                if (args.isEmpty()) {
-                    println("Using default server: 127.0.0.1 8080")
-                    Client()
-                } else {
-                    if (args.size != 2) {
-                        println("Usage: Client <server> <port>")
-                        return
-                    }
-                    val server = args[0]
-                    val port = args[1].toInt()
-                    Client(InetSocketAddress(server, port))
-                }
-            client.connect()
-        }
     }
 
     fun connect() {
         if (isConnected.get()) {
-            println("Client is already connected")
+            logger.debug("Client is already connected")
             return
         }
-        packetDumper.start()
 
-        println("Connecting to server: $socketAddress")
-        socket.connect(socketAddress)
-        println("Connected to server: $socketAddress")
-        isConnected.set(true)
-        tunTapDevice.open()
-
+        readFromProxyJob = SupervisorJob()
+        readFromProxyJobScope = CoroutineScope(Dispatchers.IO + readFromProxyJob)
         readFromProxyJobScope.launch {
-            readFromProxyWriteToTun()
-        }
+            logger.debug("Connecting to server: {}", socketAddress)
+            try {
+                socket.connect(socketAddress)
+                logger.debug("Connected to server: {}", socketAddress)
+                isConnected.set(true)
 
-        readFromTunJobScope.launch {
-            readFromTunWriteToProxy()
-        }
+                readFromTunJob = SupervisorJob()
+                readFromTunJobScope = CoroutineScope(Dispatchers.IO + readFromTunJob)
+                readFromTunJobScope.launch {
+                    readFromTunWriteToProxy()
+                }
 
-        // block until the read job is finished
+                readFromProxyWriteToTun()
+            } catch (e: Exception) {
+                logger.error("Failed to connect to server")
+            }
+        }
+        readFromProxyJob.complete()
+    }
+
+    fun waitUntilShutdown() {
+        // block until the read jobs are finished
         runBlocking {
             readFromProxyJob.join()
             readFromTunJob.join()
         }
     }
+
+    abstract fun tunRead(
+        readBytes: ByteArray,
+        bytesToRead: Int,
+    ): Int
+
+    abstract fun tunWrite(writeBytes: ByteArray)
 
     private fun readFromProxyWriteToTun() {
         val buffer = ByteArray(MAX_RECEIVE_BUFFER_SIZE)
@@ -93,7 +96,12 @@ class Client(
 
         while (isConnected.get()) {
             // logger.debug("Waiting for response from server")
-            socket.receive(datagram)
+            try {
+                socket.receive(datagram)
+            } catch (e: Exception) {
+                logger.error("Error receiving from server: $e")
+                break
+            }
             stream.put(buffer, 0, datagram.length)
             stream.flip()
             val packets = parseStream(stream)
@@ -103,8 +111,8 @@ class Client(
                     continue
                 }
                 logger.debug("From proxy: $packet")
-                tunTapDevice.write(ByteBuffer.wrap(packet.toByteArray()))
                 packetDumper.dumpBuffer(ByteBuffer.wrap(packet.toByteArray()), etherType = EtherType.DETECT)
+                tunWrite(packet.toByteArray())
             }
         }
         logger.warn("No longer reading from server")
@@ -114,18 +122,35 @@ class Client(
         packets.forEach { packet ->
             val buffer = packet.toByteArray()
             val datagramPacket = DatagramPacket(buffer, buffer.size, socketAddress)
-            socket.send(datagramPacket)
             packetDumper.dumpBuffer(ByteBuffer.wrap(buffer), etherType = EtherType.DETECT)
+            try {
+                socket.send(datagramPacket)
+            } catch (e: Exception) {
+                logger.warn("IO error writing to proxy, probably shutting down")
+                return@forEach
+            }
+            // logger.debug("From OS: $packet")
         }
     }
 
     private fun readFromTunWriteToProxy() {
         val readBuffer = ByteArray(MAX_RECEIVE_BUFFER_SIZE)
         val stream = ByteBuffer.allocate(MAX_STREAM_BUFFER_SIZE)
+        val filters = onlyProtocols.isNotEmpty() || onlyDestinations.isNotEmpty()
+
+        if (filters) {
+            logger.warn("Filters enabled, not sending all packets to proxy")
+        }
 
         while (isConnected.get()) {
             val bytesToRead = min(MAX_RECEIVE_BUFFER_SIZE, stream.remaining())
-            val bytesRead = tunTapDevice.read(readBuffer, bytesToRead)
+            val bytesRead =
+                try {
+                    tunRead(readBuffer, bytesToRead)
+                } catch (e: Exception) {
+                    logger.warn("Exception trying to read from proxy, probably shutting down: $e")
+                    break
+                }
             if (bytesRead == -1) {
                 logger.warn("End of OS stream")
                 break
@@ -136,17 +161,52 @@ class Client(
                 stream.flip()
                 // logger.debug("After flip: position: {} remaining {}", stream.position(), stream.remaining())
                 val packets = parseStream(stream)
-                for (packet in packets) {
-                    logger.debug("To proxy: $packet")
+
+                if (filters) {
+                    val packetsToForward: MutableList<Packet> = mutableListOf()
+                    for (packet in packets) {
+                        if (onlyDestinations.isNotEmpty()) {
+                            if (packet.ipHeader?.destinationAddress in onlyDestinations) {
+                                if (onlyProtocols.isNotEmpty()) {
+                                    if (packet.ipHeader?.protocol in onlyProtocols) {
+                                        packetsToForward.add(packet)
+                                        // logger.debug("To proxy: $packet")
+                                    }
+                                } else {
+                                    packetsToForward.add(packet)
+                                    // logger.debug("To proxy: $packet")
+                                }
+                            }
+                        } else {
+                            if (onlyProtocols.isNotEmpty()) {
+                                if (packet.ipHeader?.protocol in onlyProtocols) {
+                                    packetsToForward.add(packet)
+                                    // logger.debug("To proxy: $packet")
+                                }
+                            }
+                        }
+                    }
+                    writePackets(packetsToForward)
+                } else {
+                    writePackets(packets)
                 }
-                // logger.debug("After parse: position: {} remaining {}", stream.position(), stream.remaining())
-                writePackets(packets)
             }
         }
         logger.warn("No longer reading from TUN adapter")
+        readFromTunJob.complete()
     }
 
-    fun close() {
-        packetDumper.stop()
+    open fun close() {
+        logger.debug("Stopping client")
+        isConnected.set(false)
+        socket.close()
+        runBlocking {
+            logger.debug("Waiting for tun reader to stop")
+            readFromTunJob.join()
+            logger.debug("Stopped, waiting for proxy reader to stop")
+            readFromProxyJob.join()
+            logger.debug("Stopped")
+        }
+        logger.debug("Client stopped")
     }
 }

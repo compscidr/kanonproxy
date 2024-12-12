@@ -25,9 +25,6 @@ tasks.jacocoTestReport {
 }
 
 tasks.withType<Test>().configureEach {
-    useJUnitPlatform {
-        systemProperty("junit.jupiter.execution.parallel.config.dynamic.factor", "0.25") // Use half the number of processors
-    }
     finalizedBy("jacocoTestReport")
     testLogging {
         // get the test stdout / stderr to show up when we run gradle from command line
@@ -36,6 +33,14 @@ tasks.withType<Test>().configureEach {
         // https://docs.gradle.org/current/javadoc/org/gradle/api/tasks/testing/Test.html
         outputs.upToDateWhen {true}
         showStandardStreams = true
+    }
+}
+
+testing {
+    suites {
+        val test by getting(JvmTestSuite::class) {
+            useJUnitJupiter()
+        }
     }
 }
 
@@ -51,6 +56,7 @@ dependencies {
     testRuntimeOnly(libs.junit.jupiter.engine)
     testImplementation(libs.logback.classic)
     testImplementation(libs.testservers)
+    testImplementation(libs.knet)
     implementation(kotlin("stdlib"))
 }
 
