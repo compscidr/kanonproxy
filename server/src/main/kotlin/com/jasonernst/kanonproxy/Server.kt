@@ -26,7 +26,7 @@ class Server(
     icmp: Icmp,
     private val port: Int = 8080,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
-    protector: VpnProtector = DummyProtector
+    protector: VpnProtector = DummyProtector,
 ) : ProxySessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
     private lateinit var socket: DatagramSocket

@@ -29,7 +29,7 @@ abstract class Client(
     private val socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
     private val onlyDestinations: List<InetAddress> = emptyList(),
-    private val onlyProtocols: List<UByte> = emptyList()
+    private val onlyProtocols: List<UByte> = emptyList(),
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val socket = DatagramSocket()
@@ -167,21 +167,21 @@ abstract class Client(
                     for (packet in packets) {
                         if (onlyDestinations.isNotEmpty()) {
                             if (packet.ipHeader?.destinationAddress in onlyDestinations) {
-                                if(onlyProtocols.isNotEmpty()) {
+                                if (onlyProtocols.isNotEmpty()) {
                                     if (packet.ipHeader?.protocol in onlyProtocols) {
                                         packetsToForward.add(packet)
-                                        //logger.debug("To proxy: $packet")
+                                        // logger.debug("To proxy: $packet")
                                     }
                                 } else {
                                     packetsToForward.add(packet)
-                                    //logger.debug("To proxy: $packet")
+                                    // logger.debug("To proxy: $packet")
                                 }
                             }
                         } else {
-                            if(onlyProtocols.isNotEmpty()) {
+                            if (onlyProtocols.isNotEmpty()) {
                                 if (packet.ipHeader?.protocol in onlyProtocols) {
                                     packetsToForward.add(packet)
-                                    //logger.debug("To proxy: $packet")
+                                    // logger.debug("To proxy: $packet")
                                 }
                             }
                         }

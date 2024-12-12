@@ -33,7 +33,6 @@ import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingDeque
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * A "TCP client" that has its own state machine, processes packets, and generates new packets to send.

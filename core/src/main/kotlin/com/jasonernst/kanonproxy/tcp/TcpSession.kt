@@ -76,7 +76,10 @@ abstract class TcpSession(
         swapSourceAndDestination: Boolean = true,
         requiresLock: Boolean,
     ): Packet? {
-        if (tcpStateMachine.tcpState.value == TcpState.CLOSED || tcpStateMachine.tcpState.value == TcpState.TIME_WAIT || tcpStateMachine.tcpState.value == TcpState.LAST_ACK) {
+        if (tcpStateMachine.tcpState.value == TcpState.CLOSED ||
+            tcpStateMachine.tcpState.value == TcpState.TIME_WAIT ||
+            tcpStateMachine.tcpState.value == TcpState.LAST_ACK
+        ) {
             // prevent going into all this if we're already closed
             return null
         }

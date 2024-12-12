@@ -101,7 +101,7 @@ class AnonymousTcpSession(
             logger.debug("TCP connecting to {}:{}", initialIpHeader!!.destinationAddress, initialTransportHeader!!.destinationPort)
             channel.socket().keepAlive = false
             // channel.socket().soTimeout = 0
-            //channel.socket().reuseAddress = true
+            // channel.socket().reuseAddress = true
             channel.configureBlocking(false)
             connectTime = System.currentTimeMillis()
             val result =
@@ -148,7 +148,7 @@ class AnonymousTcpSession(
             channel.close()
             channel = SocketChannel.open()
             connect()
-        } catch(e: Exception) {
+        } catch (e: Exception) {
             return false
         }
         return true

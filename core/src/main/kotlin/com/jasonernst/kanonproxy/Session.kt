@@ -15,7 +15,6 @@ import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.knet.transport.TransportHeader
 import com.jasonernst.knet.transport.tcp.TcpHeader
 import com.jasonernst.knet.transport.tcp.options.TcpOptionMaximumSegmentSize
-import com.jasonernst.packetdumper.ethernet.EtherType
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,7 +33,6 @@ import java.nio.channels.CancelledKeyException
 import java.nio.channels.ClosedSelectorException
 import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
-import java.nio.channels.SelectionKey.OP_CONNECT
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import java.nio.channels.spi.AbstractSelectableChannel
@@ -204,14 +202,17 @@ abstract class Session(
                             val currentTime = System.currentTimeMillis()
                             val difference = currentTime - session.connectTime
                             if (difference > STALE_SESSION_MS) {
-                                val error = "Timed out trying to reach remote on TCP connect. Connect time: ${session.connectTime}, currentTime: $currentTime, difference: $difference"
+                                val error =
+                                    "Timed out trying to reach remote on TCP connect. " +
+                                        "Connect time: ${session.connectTime}, currentTime: " +
+                                        "$currentTime, difference: $difference"
                                 logger.error(error)
                                 selector.keys().clear()
                                 session.reconnectRemoteChannel()
 
-                                //handleExceptionOnRemoteChannel(Exception(error))
-                                //selector.close()
-                                //break
+                                // handleExceptionOnRemoteChannel(Exception(error))
+                                // selector.close()
+                                // break
                             }
                         }
                     }

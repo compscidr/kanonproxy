@@ -418,19 +418,19 @@ class KAnonProxy(
             logger.debug("Still have ${sessionTableBySessionKey.size} sessions")
             for (entry in sessionTableBySessionKey) {
                 val session = entry.value
-                val state = if (session is AnonymousTcpSession) {
-                    session.tcpStateMachine.tcpState.value.toString()
-                } else {
-                    ""
-                }
+                val state =
+                    if (session is AnonymousTcpSession) {
+                        session.tcpStateMachine.tcpState.value
+                            .toString()
+                    } else {
+                        ""
+                    }
                 logger.debug("  $state ${entry.key}")
             }
         }
     }
 
-    override fun isRunning(): Boolean {
-        return isRunning.get()
-    }
+    override fun isRunning(): Boolean = isRunning.get()
 
     fun stop() {
         logger.debug("Stopping KAnonProxy")
