@@ -28,7 +28,7 @@ dependencies {
     runtimeOnly(libs.logback.classic)
 }
 
-/ see: https://github.com/vanniktech/gradle-maven-publish-plugin/issues/747#issuecomment-2066762725
+// see: https://github.com/vanniktech/gradle-maven-publish-plugin/issues/747#issuecomment-2066762725
 // and: https://github.com/GradleUp/nmcp
 nmcp {
     val props = project.properties
