@@ -1,16 +1,18 @@
 package com.jasonernst.kanonproxy
 
+import com.jasonernst.kanonproxy.KAnonProxy.Companion.DEFAULT_PORT
 import com.jasonernst.kanonproxy.tuntap.TunTapDevice
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import sun.misc.Signal
 import java.net.InetSocketAddress
+import java.nio.channels.DatagramChannel
 
 class LinuxClient(
-    socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
+    datagramChannel: DatagramChannel,
     packetDumper: AbstractPacketDumper = DummyPacketDumper,
-) : Client(socketAddress, packetDumper) {
+) : Client(datagramChannel, packetDumper) {
     private val tunTapDevice = TunTapDevice()
 
     init {
@@ -22,10 +24,14 @@ class LinuxClient(
         fun main(args: Array<String>) {
             val packetDumper = PcapNgTcpServerPacketDumper()
             packetDumper.start()
+
             val client =
                 if (args.isEmpty()) {
-                    println("Using default server: 127.0.0.1 8080")
-                    LinuxClient(packetDumper = packetDumper)
+                    println("Using default server: 127.0.0.1 $DEFAULT_PORT")
+                    val datagramChannel = DatagramChannel.open()
+                    datagramChannel.configureBlocking(false)
+                    datagramChannel.connect(InetSocketAddress("127.0.0.1", DEFAULT_PORT))
+                    LinuxClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
                 } else {
                     if (args.size != 2) {
                         println("Usage: Client <server> <port>")
@@ -33,12 +39,15 @@ class LinuxClient(
                     }
                     val server = args[0]
                     val port = args[1].toInt()
-                    LinuxClient(socketAddress = InetSocketAddress(server, port), packetDumper = packetDumper)
+                    val datagramChannel = DatagramChannel.open()
+                    datagramChannel.configureBlocking(false)
+                    datagramChannel.connect(InetSocketAddress(server, port))
+                    LinuxClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
                 }
-            client.connect()
+            client.start()
 
             Signal.handle(Signal("INT")) {
-                client.close()
+                client.stop()
                 packetDumper.stop()
             }
 
@@ -55,8 +64,8 @@ class LinuxClient(
         tunTapDevice.write(writeBytes)
     }
 
-    override fun close() {
+    override fun stop() {
         tunTapDevice.close()
-        super.close()
+        super.stop()
     }
 }

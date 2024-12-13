@@ -6,7 +6,6 @@ import com.jasonernst.knet.Packet
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
-import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper.Companion.DEFAULT_PORT
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class Server(
     icmp: Icmp,
-    private val port: Int = 8080,
+    private val port: Int = KAnonProxy.DEFAULT_PORT,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
     protector: VpnProtector = DummyProtector,
 ) : ProxySessionManager {
@@ -44,10 +43,10 @@ class Server(
         @JvmStatic
         fun main(args: Array<String>) {
             // listen on one port higher so we don't conflict with the client
-            val packetDumper = PcapNgTcpServerPacketDumper(listenPort = DEFAULT_PORT + 1)
+            val packetDumper = PcapNgTcpServerPacketDumper(listenPort = PcapNgTcpServerPacketDumper.DEFAULT_PORT + 1)
             val server =
                 if (args.isEmpty()) {
-                    println("Using default port: 8080")
+                    println("Using default port: ${KAnonProxy.DEFAULT_PORT}")
                     Server(IcmpLinux)
                 } else {
                     if (args.size != 1) {

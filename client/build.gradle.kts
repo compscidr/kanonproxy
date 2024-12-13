@@ -34,6 +34,7 @@ jacoco {
 }
 
 dependencies {
+    implementation(project(":core")) // only really for the DEFAULT_PORT
     implementation(libs.jna)
     implementation(libs.jnr.enxio)
     implementation(libs.knet)

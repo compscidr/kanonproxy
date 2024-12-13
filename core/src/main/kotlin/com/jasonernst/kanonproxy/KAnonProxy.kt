@@ -65,6 +65,7 @@ class KAnonProxy(
 
     companion object {
         const val STALE_SESSION_MS = 5000L
+        const val DEFAULT_PORT = 8080
     }
 
     fun start() {
