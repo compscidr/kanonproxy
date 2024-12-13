@@ -5,6 +5,7 @@ import com.jasonernst.icmp.linux.IcmpLinux
 import com.jasonernst.knet.Packet
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
+import com.jasonernst.packetdumper.ethernet.EtherType
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
@@ -107,15 +108,15 @@ class Server(
             stream.put(buffer, 0, packet.length)
             stream.flip()
             val packets = Packet.parseStream(stream)
-//            for (packet in packets) {
-//                logger.debug("From Client: packet $packet")
-//            }
+            for (p in packets) {
+                packetDumper.dumpBuffer(ByteBuffer.wrap(p.toByteArray()), etherType = EtherType.DETECT)
+            }
             val clientAddress = InetSocketAddress(packet.address, packet.port)
             kAnonProxy.handlePackets(packets, clientAddress)
             var newSession = false
             sessions.getOrPut(clientAddress) {
                 newSession = true
-                val session = ProxySession(clientAddress, kAnonProxy, socket, this)
+                val session = ProxySession(clientAddress, kAnonProxy, socket, this, packetDumper)
                 session.start()
                 session
             }
