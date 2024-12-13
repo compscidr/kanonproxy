@@ -33,6 +33,7 @@ import java.nio.channels.CancelledKeyException
 import java.nio.channels.ClosedSelectorException
 import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
+import java.nio.channels.SelectionKey.OP_CONNECT
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import java.nio.channels.spi.AbstractSelectableChannel
@@ -152,6 +153,7 @@ abstract class Session(
         incomingScope = CoroutineScope(Dispatchers.IO + incomingJob)
         selectorJob = SupervisorJob()
         selectorScope = CoroutineScope(Dispatchers.IO + selectorJob)
+        val session = this
         selectorScope.launch {
             if (isRunning.get().not()) {
                 logger.debug("Session shutting down before starting")
@@ -159,6 +161,11 @@ abstract class Session(
             }
             val oldThreadName = Thread.currentThread().name
             Thread.currentThread().name = "Selector: ${getKey()}"
+
+            if (session is AnonymousTcpSession) {
+                (channel as SocketChannel).register(selector, OP_CONNECT)
+            }
+
             while (isRunning.get()) {
                 if (sessionManager.isRunning().not()) {
                     logger.warn("Session manager is no longer running, shutting down")
@@ -207,12 +214,12 @@ abstract class Session(
                                         "Connect time: ${session.connectTime}, currentTime: " +
                                         "$currentTime, difference: $difference"
                                 logger.error(error)
-                                selector.keys().clear()
-                                session.reconnectRemoteChannel()
+                                // selector.keys().clear()
+                                // session.reconnectRemoteChannel()
 
-                                // handleExceptionOnRemoteChannel(Exception(error))
-                                // selector.close()
-                                // break
+                                handleExceptionOnRemoteChannel(Exception(error))
+                                selector.close()
+                                break
                             }
                         }
                     }
@@ -257,7 +264,7 @@ abstract class Session(
                                     selector.close()
                                 }
                             }
-                            if (it.isConnectable) {
+                            if (it.isConnectable && it.isValid) {
                                 if (it.channel() is DatagramChannel) {
                                     logger.warn("IN CONNECTABLE AS DATAGRAM CHANNEL")
                                 }
@@ -269,6 +276,7 @@ abstract class Session(
                                         if (result) {
                                             logger.debug("Tcp connection successful")
                                             isConnecting.set(false)
+                                            startIncomingHandling()
                                             if (outgoingQueue.isNotEmpty()) {
                                                 it.interestOps(SelectionKey.OP_WRITE)
                                             } else {
@@ -279,16 +287,9 @@ abstract class Session(
                                             // will retry again when the selector wakes up
                                         }
                                     } catch (e: Exception) {
+                                        logger.error("Failed to finish connecting: $e")
                                         handleExceptionOnRemoteChannel(e)
                                         selector.close()
-                                    }
-                                } else if (socketChannel.isConnected) {
-                                    logger.debug("Tcp connection successful in isConnected")
-                                    isConnecting.set(false)
-                                    if (outgoingQueue.isNotEmpty()) {
-                                        it.interestOps(SelectionKey.OP_WRITE)
-                                    } else {
-                                        it.interestOps(SelectionKey.OP_READ)
                                     }
                                 }
                             }

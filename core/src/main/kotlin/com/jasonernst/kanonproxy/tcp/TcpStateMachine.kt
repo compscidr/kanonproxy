@@ -1811,10 +1811,12 @@ class TcpStateMachine(
             try {
                 val buffer = ByteBuffer.wrap(payload)
                 if (session.channel is BidirectionalByteChannel) {
+                    logger.debug("BIDIRECTIONAL")
                     while (buffer.hasRemaining()) {
                         session.channel.write(buffer)
                     }
                 } else {
+                    logger.debug("OUTGOING QUEUE")
                     session.outgoingQueue.add(buffer)
                     session.readyToWrite()
                 }

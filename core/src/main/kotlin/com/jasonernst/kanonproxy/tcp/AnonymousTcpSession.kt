@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
+import java.nio.channels.SelectionKey.OP_CONNECT
 import java.nio.channels.SocketChannel
 import java.nio.channels.spi.AbstractSelectableChannel
 import java.util.concurrent.LinkedBlockingDeque
@@ -76,6 +77,9 @@ class AnonymousTcpSession(
     }
 
     init {
+        channel.socket().keepAlive = false
+        channel.configureBlocking(false)
+
         startSelector()
         protector.protectTCPSocket(channel.socket())
         tcpStateMachine.passiveOpen()
@@ -84,26 +88,20 @@ class AnonymousTcpSession(
                 logger.debug("Session shutting down before starting")
                 return@launch
             }
-            startIncomingHandling()
             val oldThreadName = Thread.currentThread().name
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
-
             connect()
-
             logger.debug("outgoing job complete")
             Thread.currentThread().name = oldThreadName
             outgoingJob.complete()
         }
     }
 
-    fun connect() {
+    private fun connect() {
         try {
             logger.debug("TCP connecting to {}:{}", initialIpHeader!!.destinationAddress, initialTransportHeader!!.destinationPort)
-            channel.socket().keepAlive = false
-            // channel.socket().soTimeout = 0
-            // channel.socket().reuseAddress = true
-            channel.configureBlocking(false)
             connectTime = System.currentTimeMillis()
+            logger.debug("Adding REGISTER request to CONNECT")
             val result =
                 channel.connect(
                     InetSocketAddress(initialIpHeader!!.destinationAddress, initialTransportHeader!!.destinationPort.toInt()),
@@ -112,6 +110,7 @@ class AnonymousTcpSession(
                 // this can either be connected immediately, or we'll have to wait for the selector
                 logger.debug("TCP connected to ${initialIpHeader!!.destinationAddress}")
                 isConnecting.set(false)
+                startIncomingHandling()
 
                 // we may have got data while waiting to connect
                 if (outgoingQueue.isNotEmpty()) {
@@ -130,10 +129,6 @@ class AnonymousTcpSession(
             } else {
                 logger.debug("CONNECT called, waiting for selector")
                 channel.finishConnect()
-                logger.debug("Adding CHANGE request to CONNECT")
-                synchronized(changeRequests) {
-                    changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_CONNECT))
-                }
             }
             selector.wakeup()
         } catch (e: Exception) {
@@ -147,6 +142,11 @@ class AnonymousTcpSession(
         try {
             channel.close()
             channel = SocketChannel.open()
+            channel.socket().keepAlive = false
+            channel.configureBlocking(false)
+            changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, OP_CONNECT))
+            selector.wakeup()
+            Thread.yield()
             connect()
         } catch (e: Exception) {
             return false
