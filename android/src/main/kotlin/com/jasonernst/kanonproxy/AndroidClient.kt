@@ -6,15 +6,15 @@ import android.os.ParcelFileDescriptor.AutoCloseOutputStream
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
 import java.net.InetAddress
-import java.net.InetSocketAddress
+import java.nio.channels.DatagramChannel
 
 class AndroidClient(
-    socketAddress: InetSocketAddress = InetSocketAddress("127.0.0.1", 8080),
+    datagramChannel: DatagramChannel,
     packetDumper: AbstractPacketDumper = DummyPacketDumper,
     vpnFileDescriptor: ParcelFileDescriptor,
     onlyDestinations: List<InetAddress> = emptyList(),
     onlyProtocols: List<UByte> = emptyList()
-) : Client(socketAddress, packetDumper, onlyDestinations, onlyProtocols) {
+) : Client(datagramChannel, packetDumper, onlyDestinations, onlyProtocols) {
 
     private val inputStream = AutoCloseInputStream(vpnFileDescriptor)
     private val outputStream = AutoCloseOutputStream(vpnFileDescriptor)
@@ -27,5 +27,4 @@ class AndroidClient(
         outputStream.write(writeBytes)
         outputStream.flush()
     }
-
 }
