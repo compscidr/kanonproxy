@@ -45,7 +45,7 @@ class AnonymousTcpSession(
     // that connect will take care of it. If it doesn't we can fall back to open with the InetSocketAddress, however,
     // that will do connect during open.
     override var channel: SocketChannel = SocketChannel.open()
-    var connectTime: Long = 0L
+    var connectTime: Long = System.currentTimeMillis()
 
     override fun handleReturnTrafficLoop(maxRead: Int): Int {
         val len = super.handleReturnTrafficLoop(maxRead)
@@ -79,9 +79,9 @@ class AnonymousTcpSession(
     init {
         channel.socket().keepAlive = false
         channel.configureBlocking(false)
-
-        startSelector()
         protector.protectTCPSocket(channel.socket())
+        startSelector()
+        Thread.yield()
         tcpStateMachine.passiveOpen()
         outgoingScope.launch {
             if (isRunning.get().not()) {
@@ -100,8 +100,7 @@ class AnonymousTcpSession(
     private fun connect() {
         try {
             logger.debug("TCP connecting to {}:{}", initialIpHeader!!.destinationAddress, initialTransportHeader!!.destinationPort)
-            connectTime = System.currentTimeMillis()
-            logger.debug("Adding REGISTER request to CONNECT")
+            // logger.debug("Adding REGISTER request to CONNECT")
             val result =
                 channel.connect(
                     InetSocketAddress(initialIpHeader!!.destinationAddress, initialTransportHeader!!.destinationPort.toInt()),
@@ -128,7 +127,7 @@ class AnonymousTcpSession(
                 }
             } else {
                 logger.debug("CONNECT called, waiting for selector")
-                channel.finishConnect()
+                // channel.finishConnect() // this makes haywire select messages show up.
             }
             selector.wakeup()
         } catch (e: Exception) {

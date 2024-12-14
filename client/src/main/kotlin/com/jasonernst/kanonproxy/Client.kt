@@ -101,11 +101,11 @@ abstract class Client(
                 for (changeRequest in changeRequests) {
                     when (changeRequest.type) {
                         REGISTER -> {
-                            logger.debug("Processing REGISTER: ${changeRequest.ops}")
+                            // logger.debug("Processing REGISTER: ${changeRequest.ops}")
                             changeRequest.channel.register(selector, changeRequest.ops)
                         }
                         CHANGE_OPS -> {
-                            logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
+                            // logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
                             val key = changeRequest.channel.keyFor(selector)
                             key.interestOps(changeRequest.ops)
                         }
@@ -229,7 +229,7 @@ abstract class Client(
                     }
                 }
                 if (numPackets > 0) {
-                    logger.debug("Added packets, switching to WRITE mode")
+                    // logger.debug("Added packets, switching to WRITE mode")
                     synchronized(changeRequests) {
                         changeRequests.add(ChangeRequest(datagramChannel, CHANGE_OPS, OP_WRITE))
                     }

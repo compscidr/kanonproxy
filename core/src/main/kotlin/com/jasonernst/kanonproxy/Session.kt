@@ -31,7 +31,6 @@ import java.nio.ByteBuffer
 import java.nio.channels.ByteChannel
 import java.nio.channels.CancelledKeyException
 import java.nio.channels.ClosedSelectorException
-import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.SelectionKey.OP_CONNECT
 import java.nio.channels.Selector
@@ -231,15 +230,16 @@ abstract class Session(
                 try {
                     val selectedKeys = selector.selectedKeys()
                     if (selectedKeys.size > 0) {
-                        logger.warn("SELECT: $selectedKeys")
+                        // logger.warn("SELECT: ${selectedKeys.toString()}")
                     }
                     val keyStream = selectedKeys.parallelStream()
                     keyStream
                         .forEach {
                             if (!it.isValid) {
-                                logger.error("INVALID KEY!!!!! $this@Session")
+                                logger.error("INVALID KEY!!! ${keyToString(it)}")
                             }
                             if (it.isWritable && it.isValid) {
+                                logger.debug("WRITABLE KEY: ${keyToString(it)}")
                                 // could do a while loop here, but others might starve
                                 if (outgoingQueue.isNotEmpty()) {
                                     val queue = outgoingQueue.take()
@@ -257,7 +257,7 @@ abstract class Session(
                                 }
                             }
                             if (it.isReadable && it.isValid) {
-                                // logger.warn("READABLE!!!!")
+                                logger.debug("READABLE KEY: ${keyToString(it)}")
                                 if (!read()) {
                                     logger.warn("Remote read failed, closing selector")
                                     it.interestOps(0)
@@ -265,12 +265,10 @@ abstract class Session(
                                 }
                             }
                             if (it.isConnectable && it.isValid) {
-                                if (it.channel() is DatagramChannel) {
-                                    logger.warn("IN CONNECTABLE AS DATAGRAM CHANNEL")
-                                }
+                                // AFAIK its only possible to be here if its a SocketChannel
                                 val socketChannel = it.channel() as SocketChannel
-                                // logger.debug("Tcp connectable, trying to finish connection to ${socketChannel.remoteAddress}")
                                 if (socketChannel.isConnectionPending) {
+                                    logger.debug("CONNECTING PENDING KEY: ${keyToString(it)}")
                                     try {
                                         val result = socketChannel.finishConnect()
                                         if (result) {
@@ -496,5 +494,28 @@ abstract class Session(
         } catch (e: Exception) {
             logger.warn("Failed to close channel")
         }
+    }
+
+    /**
+     * Helper function to print useful info from a selector
+     */
+    fun keyToString(selectionKey: SelectionKey): String {
+        val sb = StringBuilder()
+        sb
+            .append("channel=")
+            .append(selectionKey.channel())
+            .append(", selector=")
+            .append(selector)
+        if (selectionKey.isValid) {
+            sb
+                .append(", interestOps=")
+                .append(selectionKey.interestOps())
+                .append(", readyOps=")
+                .append(selectionKey.readyOps())
+        } else {
+            sb.append(", invalid")
+        }
+
+        return sb.toString()
     }
 }

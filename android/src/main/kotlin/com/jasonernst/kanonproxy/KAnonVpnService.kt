@@ -5,17 +5,25 @@ import android.net.VpnService
 import android.os.Binder
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import androidx.appcompat.app.ActionBar.DisplayOptions
 import androidx.preference.PreferenceManager
 import com.jasonernst.icmp.android.IcmpAndroid
+import com.jasonernst.kanonproxy.KAnonProxy.Companion.DEFAULT_PORT
 import com.jasonernst.kanonproxy.model.KAnonViewModel
 import com.jasonernst.kanonproxy.ui.VpnUiService
 import com.jasonernst.knet.network.ip.IpType
 import com.jasonernst.packetdumper.serverdumper.ConnectedUsersChangedCallback
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.channels.DatagramChannel
 
 class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback, VpnProtector {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -64,19 +72,24 @@ class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback
 
         vpnFileDescriptor = builder.establish() ?: throw RuntimeException("Error establishing VPN")
 
-        //val onlyDestination = listOf(InetAddress.getByName("8.8.8.8"))
-        val onlyDestination = emptyList<InetAddress>()
-        // val onlyProtocols = listOf(IpType.UDP.value)
-        val onlyProtocols = emptyList<UByte>()
-        client = AndroidClient(vpnFileDescriptor = vpnFileDescriptor, packetDumper = packetDumper, onlyDestinations = onlyDestination, onlyProtocols = onlyProtocols)
-        client.connect()
-        viewModel.serviceStarted()
+        CoroutineScope(Dispatchers.IO).launch {
+            // val onlyDestination = listOf(InetAddress.getByName("8.8.8.8"), InetAddress.getByName("8.8.4.4"))
+            val onlyDestination = emptyList<InetAddress>()
+            // val onlyProtocols = listOf(IpType.UDP.value)
+            val onlyProtocols = emptyList<UByte>()
+            val datagramChannel = DatagramChannel.open()
+            datagramChannel.configureBlocking(false)
+            datagramChannel.connect(InetSocketAddress("127.0.0.1", DEFAULT_PORT))
+            client = AndroidClient(vpnFileDescriptor = vpnFileDescriptor, packetDumper = packetDumper, onlyDestinations = onlyDestination, onlyProtocols = onlyProtocols, datagramChannel = datagramChannel)
+            client.start()
+            viewModel.serviceStarted()
+        }
     }
 
     override fun stopVPN() {
         vpnFileDescriptor.close()
         server.stop()
-        client.close()
+        client.stop()
         viewModel.serviceStopped()
     }
 
