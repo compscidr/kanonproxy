@@ -11,8 +11,6 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,7 +18,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ProxySession(
     private val clientAddress: InetSocketAddress,
     private val kAnonProxy: KAnonProxy,
-    private val socket: DatagramSocket,
     private val sessionManager: ProxySessionManager,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
 ) {
@@ -50,15 +47,9 @@ class ProxySession(
                 break
             }
             // logger.debug("Received response from proxy for client: $clientAddress, sending datagram back")
-            val buffer = response.toByteArray()
-            packetDumper.dumpBuffer(ByteBuffer.wrap(buffer), etherType = EtherType.DETECT)
-            val datagramPacket = DatagramPacket(buffer, buffer.size, clientAddress)
-            try {
-                socket.send(datagramPacket)
-            } catch (e: Exception) {
-                logger.debug("Error trying to write to proxy server, probably shutting down: $e")
-                break
-            }
+            val buffer = ByteBuffer.wrap(response.toByteArray())
+            packetDumper.dumpBuffer(buffer, etherType = EtherType.DETECT)
+            sessionManager.enqueueOutgoing(clientAddress, buffer)
         }
         sessionManager.removeSession(clientAddress)
         isRunning.set(false)

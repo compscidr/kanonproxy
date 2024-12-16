@@ -5,6 +5,7 @@ import com.jasonernst.kanonproxy.tuntap.TunTapDevice
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
+import org.slf4j.LoggerFactory
 import sun.misc.Signal
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
@@ -13,6 +14,7 @@ class LinuxClient(
     datagramChannel: DatagramChannel,
     packetDumper: AbstractPacketDumper = DummyPacketDumper,
 ) : Client(datagramChannel, packetDumper) {
+    private val logger = LoggerFactory.getLogger(javaClass)
     private val tunTapDevice = TunTapDevice()
 
     init {
@@ -20,6 +22,8 @@ class LinuxClient(
     }
 
     companion object {
+        private val staticLogger = LoggerFactory.getLogger(LinuxClient::class.java)
+
         @JvmStatic
         fun main(args: Array<String>) {
             val packetDumper = PcapNgTcpServerPacketDumper()
@@ -27,14 +31,14 @@ class LinuxClient(
 
             val client =
                 if (args.isEmpty()) {
-                    println("Using default server: 127.0.0.1 $DEFAULT_PORT")
+                    staticLogger.debug("Using default server: 127.0.0.1 $DEFAULT_PORT")
                     val datagramChannel = DatagramChannel.open()
                     datagramChannel.configureBlocking(false)
                     datagramChannel.connect(InetSocketAddress("127.0.0.1", DEFAULT_PORT))
                     LinuxClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
                 } else {
                     if (args.size != 2) {
-                        println("Usage: Client <server> <port>")
+                        staticLogger.warn("Usage: Client <server> <port>")
                         return
                     }
                     val server = args[0]

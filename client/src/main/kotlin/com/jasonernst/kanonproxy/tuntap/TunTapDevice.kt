@@ -153,6 +153,9 @@ class TunTapDevice {
         readBytes: ByteArray,
         bytesToRead: Int,
     ): Int {
+        if (isRunning.get().not()) {
+            return -1
+        }
         // this will block until the selector puts something here, to unblock when we're shutting
         // down, just stick an empty buffer in the outgoing queue
         val buffer = outgoingQueue.take()
