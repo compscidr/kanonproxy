@@ -8,6 +8,8 @@ import com.jasonernst.knet.Packet
 import com.jasonernst.packetdumper.AbstractPacketDumper
 import com.jasonernst.packetdumper.DummyPacketDumper
 import com.jasonernst.packetdumper.ethernet.EtherType
+import com.jasonernst.packetdumper.filedumper.AbstractFilePacketDumper
+import com.jasonernst.packetdumper.serverdumper.AbstractServerPacketDumper
 import com.jasonernst.packetdumper.serverdumper.PcapNgTcpServerPacketDumper
 import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
@@ -77,7 +79,6 @@ class ProxyServer(
             server.start()
 
             Signal.handle(Signal("INT")) {
-                packetDumper.stop()
                 server.stop()
             }
 
@@ -211,6 +212,11 @@ class ProxyServer(
         datagramChannel.close()
         kAnonProxy.stop()
         selector.close()
+        if (packetDumper is AbstractServerPacketDumper) {
+            packetDumper.stop()
+        } else if (packetDumper is AbstractFilePacketDumper) {
+            packetDumper.close()
+        }
         logger.debug("Stopping outstanding sessions")
         sessions.values.forEach { it.stop() }
         logger.debug("All sessions stopped, stopping selector job")
