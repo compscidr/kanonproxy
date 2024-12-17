@@ -33,7 +33,7 @@ import kotlin.math.min
  *   and connected to the server (ie, just have the server destination addressed associated with
  *   the channel since UDP sockets can't "connect").
  */
-abstract class Client(
+abstract class ProxyClient(
     private val datagramChannel: DatagramChannel,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
     private val onlyDestinations: List<InetAddress> = emptyList(),
