@@ -4,14 +4,23 @@
 
 An anonymous proxy written in kotlin. 
 
-This project is meant to be a library that can run on android or linux. It does not provide
-the client / server functionality. It is able to process packets which have been parsed
-by https://github.com/compscidr/knet, manage sessions and make outgoing anonymous requests
-based on the incoming traffic. It also receives the return traffic, and puts them into a
-queue. 
+There are four modules for this project.
+
+## Core
+The core module is meant to be a library that can run on Android or Linux. It does not 
+provide the client / server functionality. It is able to process packets which have 
+been parsed by https://github.com/compscidr/knet, manage sessions and make outgoing 
+anonymous requests based on the incoming traffic. It also receives the return traffic, 
+and puts them into a queue. Outgoing ICMP requests are made by https://github.com/compscidr/icmp
 
 It is up to consumers of the this library to implement a server or a tun/tap adapter, or a
 VPN service on Android to make use of this library.
+
+There are example implementations of a client and server in each of the respective modules
+as well. 
+
+Lastly there is a sample Android app which uses a local client and server alongside the
+Android VPN functionality to intercept the packets.
 
 ## Usage
 The examples below show a contrived example where the packets are manually constructed. This
