@@ -32,7 +32,7 @@ class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback
     private val packetDumper = PcapNgTcpServerPacketDumper(callback = this, isSimple = false)
     private lateinit var viewModel: KAnonViewModel
 
-    private lateinit var server: Server
+    private lateinit var server: ProxyServer
     private lateinit var client: AndroidClient
     private lateinit var vpnFileDescriptor: ParcelFileDescriptor
 
@@ -62,7 +62,7 @@ class KAnonVpnService: VpnService(), VpnUiService, ConnectedUsersChangedCallback
         val serverChannel = DatagramChannel.open()
         serverChannel.configureBlocking(false)
         serverChannel.bind(InetSocketAddress(DEFAULT_PORT))
-        server = Server(datagramChannel = serverChannel, icmp = IcmpAndroid, protector = this)
+        server = ProxyServer(datagramChannel = serverChannel, icmp = IcmpAndroid, protector = this)
         server.start()
 
         val builder = Builder()

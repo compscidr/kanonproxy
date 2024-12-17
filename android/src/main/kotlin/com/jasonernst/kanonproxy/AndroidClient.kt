@@ -14,7 +14,7 @@ class AndroidClient(
     vpnFileDescriptor: ParcelFileDescriptor,
     onlyDestinations: List<InetAddress> = emptyList(),
     onlyProtocols: List<UByte> = emptyList()
-) : Client(datagramChannel, packetDumper, onlyDestinations, onlyProtocols) {
+) : ProxyClient(datagramChannel, packetDumper, onlyDestinations, onlyProtocols) {
 
     private val inputStream = AutoCloseInputStream(vpnFileDescriptor)
     private val outputStream = AutoCloseOutputStream(vpnFileDescriptor)
