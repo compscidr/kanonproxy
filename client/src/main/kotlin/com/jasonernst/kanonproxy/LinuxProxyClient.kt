@@ -10,10 +10,10 @@ import sun.misc.Signal
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
 
-class LinuxClient(
+class LinuxProxyClient(
     datagramChannel: DatagramChannel,
     packetDumper: AbstractPacketDumper = DummyPacketDumper,
-) : Client(datagramChannel, packetDumper) {
+) : ProxyClient(datagramChannel, packetDumper) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val tunTapDevice = TunTapDevice()
 
@@ -22,7 +22,7 @@ class LinuxClient(
     }
 
     companion object {
-        private val staticLogger = LoggerFactory.getLogger(LinuxClient::class.java)
+        private val staticLogger = LoggerFactory.getLogger(LinuxProxyClient::class.java)
 
         @JvmStatic
         fun main(args: Array<String>) {
@@ -35,7 +35,7 @@ class LinuxClient(
                     val datagramChannel = DatagramChannel.open()
                     datagramChannel.configureBlocking(false)
                     datagramChannel.connect(InetSocketAddress("127.0.0.1", DEFAULT_PORT))
-                    LinuxClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
+                    LinuxProxyClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
                 } else {
                     if (args.size != 2) {
                         staticLogger.warn("Usage: Client <server> <port>")
@@ -46,7 +46,7 @@ class LinuxClient(
                     val datagramChannel = DatagramChannel.open()
                     datagramChannel.configureBlocking(false)
                     datagramChannel.connect(InetSocketAddress(server, port))
-                    LinuxClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
+                    LinuxProxyClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
                 }
             client.start()
 

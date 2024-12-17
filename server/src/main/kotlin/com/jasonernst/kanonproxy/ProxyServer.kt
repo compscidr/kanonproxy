@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The datagram channel should be configured as non-blocking and already bound to the port it is
  * listening on before being passed to here.
  */
-class Server(
+class ProxyServer(
     icmp: Icmp,
     private val datagramChannel: DatagramChannel,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
@@ -50,7 +50,7 @@ class Server(
     private val changeRequests = LinkedList<ChangeRequest>()
 
     companion object {
-        private val staticLogger = LoggerFactory.getLogger(Server::class.java)
+        private val staticLogger = LoggerFactory.getLogger(ProxyServer::class.java)
         private const val MAX_RECEIVE_BUFFER_SIZE = 1500 // max amount we can recv in one read (should be the MTU or bigger probably)
 
         @JvmStatic
@@ -72,7 +72,7 @@ class Server(
             }
             datagramChannel.configureBlocking(false)
 
-            val server = Server(icmp = IcmpLinux, datagramChannel = datagramChannel)
+            val server = ProxyServer(icmp = IcmpLinux, datagramChannel = datagramChannel)
             packetDumper.start()
             server.start()
 
