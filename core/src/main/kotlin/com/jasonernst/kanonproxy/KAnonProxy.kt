@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.jetbrains.annotations.TestOnly
 import org.slf4j.LoggerFactory
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -466,5 +467,11 @@ class KAnonProxy(
         outgoingQueues.clear()
         incomingQueue.clear()
         logger.debug("KAnonProxy stopped")
+    }
+
+    @TestOnly
+    fun disconnectClient(clientAddress: InetSocketAddress) {
+        val outgoingQueue = outgoingQueues[clientAddress]
+        outgoingQueue?.add(SentinelPacket)
     }
 }
