@@ -29,6 +29,7 @@ import java.nio.channels.SelectionKey.OP_READ
 import java.nio.channels.SocketChannel
 import java.util.ArrayList
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.jvm.javaClass
 import kotlin.math.abs
 import kotlin.math.max
@@ -60,6 +61,7 @@ class TcpStateMachine(
     val swapSourceDestination: Boolean = false, // only time we want this is if we're a tcpClient
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val isRunning = AtomicBoolean(true)
     private var delayedAckJob: Job? = null
     private var latestAck: Packet? = null
 
@@ -1209,7 +1211,9 @@ class TcpStateMachine(
         //         (for the current value of RTO).
         rtoJob?.cancel()
         rtoJob = null
-        startRtoTimer()
+        if (isRunning.get()) {
+            startRtoTimer()
+        }
 
         while (retransmitQueue.isNotEmpty()) {
             // may be null if the session is shutting down
@@ -2129,7 +2133,7 @@ class TcpStateMachine(
      *        taken per (2.2) rather than using (2.3).
      */
     private fun startRtoTimer() {
-        if (rtoJob == null) {
+        if (rtoJob == null && isRunning.get()) {
             rtoJob =
                 CoroutineScope(Dispatchers.IO).launch {
                     Thread.currentThread().name = "RTO: ${session.getKey()}"
@@ -2179,7 +2183,7 @@ class TcpStateMachine(
 
     private fun setupLatestAckJob(ack: Packet) {
         latestAck = ack
-        if (delayedAckJob == null) {
+        if (delayedAckJob == null && isRunning.get()) {
             delayedAckJob =
                 CoroutineScope(Dispatchers.IO).launch {
                     Thread.currentThread().name = "latestACK: ${session.getKey()}"
@@ -2289,6 +2293,7 @@ class TcpStateMachine(
     }
 
     fun stopJobs() {
+        isRunning.set(false)
         rtoJob?.cancel()
         timeWaitJob?.cancel()
         delayedAckJob?.cancel()
