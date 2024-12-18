@@ -199,6 +199,7 @@ class TcpClient(
             } catch (e: Exception) {
                 logger.error("Failed to connect: {}, last state: {}", e.message, tcpStateMachine.tcpState.value)
                 isRunning.set(false)
+                kAnonProxy.disconnectClient(session.clientAddress)
                 kAnonProxy.removeSession(session)
                 throw e
             }
@@ -311,7 +312,11 @@ class TcpClient(
                         }
 
                     flow.collect {
-                        logger.debug("Waiting for CLOSED: {} State: {}", clientId, it)
+                        if (waitForTimeWait) {
+                            logger.debug("Waiting for CLOSED: {} State: {}", clientId, it)
+                        } else {
+                            logger.debug("Waiting for CLOSED or TIME_WAIT: {} State: {}", clientId, it)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -339,6 +344,7 @@ class TcpClient(
             isRunning.set(false)
             returnQueue.add(SentinelPacket)
             if (!waitForTimeWait) {
+                kAnonProxy.disconnectClient(session.clientAddress)
                 kAnonProxy.removeSession(session)
             }
             logger.debug("Waiting for readjob to finish")
@@ -385,6 +391,7 @@ class TcpClient(
         val session = this
         runBlocking {
             logger.debug("Waiting for readjob to stop")
+            kAnonProxy.disconnectClient(session.clientAddress)
             kAnonProxy.removeSession(session)
             readJob.cancelAndJoin()
             logger.debug("readjob stopped. Waiting for writejob to stop")
