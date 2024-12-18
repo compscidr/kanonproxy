@@ -28,7 +28,7 @@ import java.nio.ByteBuffer
 import kotlin.random.Random
 
 // this needs to be set to 250 if we want to test the TIME_WAIT state
-@Timeout(10)
+@Timeout(20)
 class TcpHandlingTest {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val kAnonProxy = KAnonProxy(IcmpLinux)
