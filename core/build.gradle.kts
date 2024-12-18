@@ -34,6 +34,7 @@ tasks.withType<Test>().configureEach {
         outputs.upToDateWhen {true}
         showStandardStreams = true
     }
+    maxParallelForks = 1; // Will not do parallel execution
 }
 
 testing {
