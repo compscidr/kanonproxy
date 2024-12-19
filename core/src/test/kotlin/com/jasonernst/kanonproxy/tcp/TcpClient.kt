@@ -352,9 +352,9 @@ class TcpClient(
                 kAnonProxy.removeSession(session)
             }
             logger.debug("Waiting for readjob to finish")
-            readJob.cancelAndJoin()
+            readJob.join()
             logger.debug("Waiting for writejob to finish")
-            writeJob.cancelAndJoin()
+            writeJob.join()
             logger.debug("Jobs finished")
         }
     }
@@ -397,9 +397,9 @@ class TcpClient(
             logger.debug("Waiting for readjob to stop")
             kAnonProxy.disconnectClient(session.clientAddress)
             kAnonProxy.removeSession(session)
-            readJob.cancelAndJoin()
+            readJob.join()
             logger.debug("readjob stopped. Waiting for writejob to stop")
-            writeJob.cancelAndJoin()
+            writeJob.join()
             logger.debug("writejob stopped")
         }
         logger.debug("Waiting for tcpState machine cleanup")
