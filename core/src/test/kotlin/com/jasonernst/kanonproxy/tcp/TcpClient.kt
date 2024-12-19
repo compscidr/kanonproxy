@@ -396,6 +396,7 @@ class TcpClient(
             logger.debug("Already stopping")
             return
         }
+        logger.debug("StopClient called")
         // used when we want to stop without the state machine stuff
         isRunning.set(false)
         val session = this
@@ -406,6 +407,7 @@ class TcpClient(
             kAnonProxy.removeSession(session)
             readJob.join()
             logger.debug("readjob stopped. Waiting for writejob to stop")
+            returnQueue.add(SentinelPacket)
             writeJob.join()
             logger.debug("writejob stopped")
         }
