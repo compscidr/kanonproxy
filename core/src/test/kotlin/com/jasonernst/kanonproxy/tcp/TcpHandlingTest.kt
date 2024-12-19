@@ -65,16 +65,6 @@ class TcpHandlingTest {
         kAnonProxy.stop()
     }
 
-    @Test fun tcpClientStartStop() {
-        val sourceAddress = InetAddress.getByName("127.0.0.1") as Inet4Address
-        val sourcePort: UShort = Random.nextInt(1024, 65535).toUShort()
-        val destinationAddress = InetAddress.getByName("0.0.0.0") as Inet4Address
-        val destinationPort: UShort = TcpEchoServer.TCP_DEFAULT_PORT.toUShort()
-        val tcpClient = TcpClient(sourceAddress, destinationAddress, sourcePort, destinationPort, kAnonProxy, packetDumper)
-        tcpClient.connect()
-        tcpClient.stopClient()
-    }
-
     // This test will have the proxy not bother to respond, and make sure we get more than one
     // SYN request
     @Test

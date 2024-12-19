@@ -109,6 +109,7 @@ class TcpClient(
             kAnonProxy.handlePackets(listOf(packet), clientAddress)
         }
         logger.debug("Writer thread finished")
+        isRunning.set(false)
         writeJob.complete()
     }
 
@@ -152,6 +153,7 @@ class TcpClient(
             }
         }
         logger.debug("Reader job finished")
+        isRunning.set(false)
         readJob.complete()
     }
 
@@ -397,6 +399,7 @@ class TcpClient(
         // used when we want to stop without the state machine stuff
         isRunning.set(false)
         val session = this
+        tcpStateMachine.stopJobs()
         runBlocking {
             logger.debug("Waiting for readjob to stop")
             kAnonProxy.disconnectClient(session.clientAddress)
@@ -406,8 +409,5 @@ class TcpClient(
             writeJob.join()
             logger.debug("writejob stopped")
         }
-        logger.debug("Waiting for tcpState machine cleanup")
-        tcpStateMachine.stopJobs()
-        logger.debug("tcpState machine cleanup finished")
     }
 }
