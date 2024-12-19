@@ -82,19 +82,21 @@ class TcpClient(
         writeJobScope.launch {
             Thread.currentThread().name = "TcpClient writer $clientId"
             writerThread()
-            writeJob.complete()
         }
 
         readJobScope.launch {
             Thread.currentThread().name = "TcpClient reader $clientId"
             readerThread()
-            readJob.complete()
         }
     }
 
     private fun writerThread() {
         while (isRunning.get()) {
             val packet = returnQueue.take()
+            if (tcpStateMachine.tcpState.value == TcpState.CLOSED) {
+                logger.warn("Have a packet to send, but in closed, stopping writer")
+                break
+            }
             if (packet == SentinelPacket) {
                 logger.warn("Got sentinel packet, stopping writer")
                 break
@@ -107,6 +109,7 @@ class TcpClient(
             kAnonProxy.handlePackets(listOf(packet), clientAddress)
         }
         logger.debug("Writer thread finished")
+        writeJob.complete()
     }
 
     private fun readerThread() {
@@ -148,6 +151,8 @@ class TcpClient(
                 logger.warn("Got unexpected packet type: {}", packet.nextHeaders)
             }
         }
+        logger.debug("Reader job finished")
+        readJob.complete()
     }
 
     /**
