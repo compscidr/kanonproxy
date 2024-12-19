@@ -2,6 +2,7 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.Session
 import com.jasonernst.kanonproxy.SessionManager
+import com.jasonernst.kanonproxy.TrafficAccounting
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
@@ -24,6 +25,7 @@ abstract class TcpSession(
     protector: VpnProtector,
     sessionManager: SessionManager,
     clientAddress: InetSocketAddress,
+    trafficAccounting: TrafficAccounting,
 ) : Session(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,
@@ -32,6 +34,7 @@ abstract class TcpSession(
         protector = protector,
         sessionManager = sessionManager,
         clientAddress = clientAddress,
+        trafficAccounting = trafficAccounting,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     val isPsh = AtomicBoolean(false) // set when we have accepted a PSH packet

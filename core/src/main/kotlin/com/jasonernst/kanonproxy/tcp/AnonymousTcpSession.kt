@@ -2,6 +2,7 @@ package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.ChangeRequest
 import com.jasonernst.kanonproxy.SessionManager
+import com.jasonernst.kanonproxy.TrafficAccounting
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
@@ -25,6 +26,7 @@ class AnonymousTcpSession(
     protector: VpnProtector,
     sessionManager: SessionManager,
     clientAddress: InetSocketAddress,
+    trafficAccounting: TrafficAccounting,
 ) : TcpSession(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,
@@ -33,6 +35,7 @@ class AnonymousTcpSession(
         protector = protector,
         sessionManager = sessionManager,
         clientAddress = clientAddress,
+        trafficAccounting = trafficAccounting,
     ) {
     companion object {
         const val CONNECTION_POLL_MS: Long = 500

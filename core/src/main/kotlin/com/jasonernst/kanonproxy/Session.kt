@@ -49,6 +49,7 @@ abstract class Session(
     val protector: VpnProtector,
     val sessionManager: SessionManager,
     val clientAddress: InetSocketAddress,
+    val trafficAccounting: TrafficAccounting = DummyTrafficAccount,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     abstract val channel: ByteChannel
@@ -90,6 +91,7 @@ abstract class Session(
             protector: VpnProtector,
             sessionManager: SessionManager,
             clientAddress: InetSocketAddress,
+            trafficAccounting: TrafficAccounting,
         ): Session =
             when (initialIPHeader.protocol) {
                 IpType.UDP.value -> {
@@ -101,6 +103,7 @@ abstract class Session(
                         protector,
                         sessionManager,
                         clientAddress,
+                        trafficAccounting,
                     )
                 }
                 IpType.TCP.value -> {
@@ -116,6 +119,7 @@ abstract class Session(
                         protector,
                         sessionManager,
                         clientAddress,
+                        trafficAccounting,
                     )
                 }
                 else -> {
@@ -245,7 +249,8 @@ abstract class Session(
                                     val queue = outgoingQueue.take()
                                     logger.debug("Writing ${queue.limit()} bytes to remote channel")
                                     while (queue.hasRemaining()) {
-                                        channel.write(queue)
+                                        val bytesWritten = channel.write(queue)
+                                        trafficAccounting.recordToInternet(bytesWritten.toLong())
                                     }
                                 }
                                 if (outgoingQueue.isNotEmpty()) {
@@ -320,6 +325,7 @@ abstract class Session(
             val payload = ByteArray(len)
             readBuffer.get(payload, 0, len)
             logger.debug("Read {} bytes from {}", len, channel)
+            trafficAccounting.recordToInternet(len.toLong())
             handlePayloadFromInternet(payload)
             readBuffer.clear()
         }
