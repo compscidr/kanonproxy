@@ -83,11 +83,13 @@ class TcpClient(
         writeJobScope.launch {
             Thread.currentThread().name = "TcpClient writer $clientId"
             writerThread()
+            writeJob.complete()
         }
 
         readJobScope.launch {
             Thread.currentThread().name = "TcpClient reader $clientId"
             readerThread()
+            readJob.complete()
         }
     }
 
@@ -206,6 +208,8 @@ class TcpClient(
         }
         if (tcpStateMachine.tcpState.value != TcpState.ESTABLISHED) {
             throw SocketException("$clientId Failed to connect: state: ${tcpStateMachine.tcpState.value}")
+        } else {
+            logger.debug("TCP connected")
         }
     }
 
