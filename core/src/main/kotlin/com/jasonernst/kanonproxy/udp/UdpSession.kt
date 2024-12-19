@@ -31,7 +31,7 @@ class UdpSession(
     protector: VpnProtector,
     sessionManager: SessionManager,
     clientAddress: InetSocketAddress,
-    trafficAccounting: TrafficAccounting
+    trafficAccounting: TrafficAccounting,
 ) : Session(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,
@@ -40,7 +40,7 @@ class UdpSession(
         protector = protector,
         sessionManager = sessionManager,
         clientAddress = clientAddress,
-        trafficAccounting = trafficAccounting
+        trafficAccounting = trafficAccounting,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 

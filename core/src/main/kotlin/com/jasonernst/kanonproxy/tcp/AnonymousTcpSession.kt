@@ -1,7 +1,6 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.ChangeRequest
-import com.jasonernst.kanonproxy.DummyTrafficAccount
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.kanonproxy.TrafficAccounting
 import com.jasonernst.kanonproxy.VpnProtector
@@ -27,7 +26,7 @@ class AnonymousTcpSession(
     protector: VpnProtector,
     sessionManager: SessionManager,
     clientAddress: InetSocketAddress,
-    trafficAccounting: TrafficAccounting
+    trafficAccounting: TrafficAccounting,
 ) : TcpSession(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,

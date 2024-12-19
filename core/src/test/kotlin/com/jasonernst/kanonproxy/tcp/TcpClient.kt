@@ -55,7 +55,7 @@ class TcpClient(
         mockk(relaxed = true),
         mockk(relaxed = true),
         clientAddress,
-        DummyTrafficAccount
+        DummyTrafficAccount,
     ) {
     private val clientId = UUID.randomUUID()
     private val logger = LoggerFactory.getLogger(javaClass)
