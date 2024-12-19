@@ -139,7 +139,6 @@ class ProxyServer(
                     val keyStream = selectedKeys.parallelStream()
                     keyStream.forEach {
                         if (it.isReadable && it.isValid) {
-                            logger.debug("READ")
                             readFromClient()
                         }
                         if (it.isWritable && it.isValid) {

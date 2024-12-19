@@ -3,6 +3,7 @@ package com.jasonernst.kanonproxy.tcp
 import com.jasonernst.icmp.common.v4.IcmpV4DestinationUnreachablePacket
 import com.jasonernst.icmp.common.v6.IcmpV6DestinationUnreachablePacket
 import com.jasonernst.kanonproxy.BidirectionalByteChannel
+import com.jasonernst.kanonproxy.DummyTrafficAccount
 import com.jasonernst.kanonproxy.KAnonProxy
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.SentinelPacket
@@ -54,6 +55,7 @@ class TcpClient(
         mockk(relaxed = true),
         mockk(relaxed = true),
         clientAddress,
+        DummyTrafficAccount
     ) {
     private val clientId = UUID.randomUUID()
     private val logger = LoggerFactory.getLogger(javaClass)

@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class KAnonProxy(
     val icmp: Icmp,
     val protector: VpnProtector = DummyProtector,
+    val trafficAccounting: TrafficAccounting = DummyTrafficAccount
 ) : SessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -212,6 +213,7 @@ class KAnonProxy(
                         protector,
                         this,
                         clientAddress,
+                        trafficAccounting
                     )
                 }
             if (isNewSession) {

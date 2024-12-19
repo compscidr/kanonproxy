@@ -3,6 +3,7 @@ package com.jasonernst.kanonproxy.udp
 import com.jasonernst.kanonproxy.ChangeRequest
 import com.jasonernst.kanonproxy.Session
 import com.jasonernst.kanonproxy.SessionManager
+import com.jasonernst.kanonproxy.TrafficAccounting
 import com.jasonernst.kanonproxy.VpnProtector
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpHeader
@@ -30,6 +31,7 @@ class UdpSession(
     protector: VpnProtector,
     sessionManager: SessionManager,
     clientAddress: InetSocketAddress,
+    trafficAccounting: TrafficAccounting
 ) : Session(
         initialIpHeader = initialIpHeader,
         initialTransportHeader = initialTransportHeader,
@@ -38,6 +40,7 @@ class UdpSession(
         protector = protector,
         sessionManager = sessionManager,
         clientAddress = clientAddress,
+        trafficAccounting = trafficAccounting
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 

@@ -1,6 +1,7 @@
 package com.jasonernst.kanonproxy.tcp
 
 import com.jasonernst.kanonproxy.DummyProtector
+import com.jasonernst.kanonproxy.DummyTrafficAccount
 import com.jasonernst.kanonproxy.SessionManager
 import com.jasonernst.knet.Packet
 import com.jasonernst.knet.network.ip.IpType
@@ -32,7 +33,7 @@ class AnonymousTcpSessionTest {
         val sessionManager = mockk<SessionManager>()
         every { sessionManager.isRunning() } returns true
 
-        val session = AnonymousTcpSession(ipHeader, tcpHeader, ByteArray(0), returnQueue, DummyProtector, sessionManager, clientAddress)
+        val session = AnonymousTcpSession(ipHeader, tcpHeader, ByteArray(0), returnQueue, DummyProtector, sessionManager, clientAddress, DummyTrafficAccount)
 
         // wait until its connecting
         while (session.isConnecting.get().not()) {
@@ -53,7 +54,7 @@ class AnonymousTcpSessionTest {
             )
         val tcpHeader2 = TcpHeader(syn = true, destinationPort = 80u)
         val returnQueue2 = LinkedBlockingDeque<Packet>()
-        val session2 = AnonymousTcpSession(ipHeader2, tcpHeader2, ByteArray(0), returnQueue2, DummyProtector, sessionManager, clientAddress)
+        val session2 = AnonymousTcpSession(ipHeader2, tcpHeader2, ByteArray(0), returnQueue2, DummyProtector, sessionManager, clientAddress, DummyTrafficAccount)
 
         // wait until its connecting
         while (session2.isConnecting.get().not()) {
