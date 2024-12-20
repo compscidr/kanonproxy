@@ -34,7 +34,7 @@ class LinuxProxyClient(
                     staticLogger.debug("Using default server: 127.0.0.1 $DEFAULT_PORT")
                     val datagramChannel = DatagramChannel.open()
                     datagramChannel.configureBlocking(false)
-                    datagramChannel.connect(InetSocketAddress("127.0.0.1", DEFAULT_PORT))
+                    datagramChannel.connect(InetSocketAddress("10.0.0.114", DEFAULT_PORT))
                     LinuxProxyClient(datagramChannel = datagramChannel, packetDumper = packetDumper)
                 } else {
                     if (args.size != 2) {

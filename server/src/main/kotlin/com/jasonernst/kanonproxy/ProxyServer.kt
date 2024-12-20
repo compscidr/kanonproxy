@@ -39,10 +39,11 @@ class ProxyServer(
     private val datagramChannel: DatagramChannel,
     private val packetDumper: AbstractPacketDumper = DummyPacketDumper,
     protector: VpnProtector = DummyProtector,
+    trafficAccounting: TrafficAccounting = DummyTrafficAccount,
 ) : ProxySessionManager {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val isRunning = AtomicBoolean(false)
-    private val kAnonProxy = KAnonProxy(icmp, protector)
+    private val kAnonProxy = KAnonProxy(icmp, protector, trafficAccounting)
     private val sessions = ConcurrentHashMap<InetSocketAddress, ProxySession>()
 
     private lateinit var selector: Selector
