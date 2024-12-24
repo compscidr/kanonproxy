@@ -202,12 +202,16 @@ abstract class ProxyClient(
                             if (packet.ipHeader?.destinationAddress in onlyDestinations) {
                                 if (onlyProtocols.isNotEmpty()) {
                                     if (packet.ipHeader?.protocol in onlyProtocols) {
-                                        outgoingQueue.add(ByteBuffer.wrap(packet.toByteArray()))
+                                        val buffer = ByteBuffer.wrap(packet.toByteArray())
+                                        packetDumper.dumpBuffer(buffer, etherType = EtherType.DETECT)
+                                        outgoingQueue.add(buffer)
                                         numPackets++
                                         // logger.debug("To proxy: $packet")
                                     }
                                 } else {
-                                    outgoingQueue.add(ByteBuffer.wrap(packet.toByteArray()))
+                                    val buffer = ByteBuffer.wrap(packet.toByteArray())
+                                    packetDumper.dumpBuffer(buffer, etherType = EtherType.DETECT)
+                                    outgoingQueue.add(buffer)
                                     numPackets++
                                     // logger.debug("To proxy: $packet")
                                 }
@@ -215,7 +219,9 @@ abstract class ProxyClient(
                         } else {
                             if (onlyProtocols.isNotEmpty()) {
                                 if (packet.ipHeader?.protocol in onlyProtocols) {
-                                    outgoingQueue.add(ByteBuffer.wrap(packet.toByteArray()))
+                                    val buffer = ByteBuffer.wrap(packet.toByteArray())
+                                    packetDumper.dumpBuffer(buffer, etherType = EtherType.DETECT)
+                                    outgoingQueue.add(buffer)
                                     numPackets++
                                     // logger.debug("To proxy: $packet")
                                 }
@@ -224,7 +230,9 @@ abstract class ProxyClient(
                     }
                 } else {
                     for (packet in packets) {
-                        outgoingQueue.add(ByteBuffer.wrap(packet.toByteArray()))
+                        val buffer = ByteBuffer.wrap(packet.toByteArray())
+                        packetDumper.dumpBuffer(buffer, etherType = EtherType.DETECT)
+                        outgoingQueue.add(buffer)
                         numPackets++
                     }
                 }
