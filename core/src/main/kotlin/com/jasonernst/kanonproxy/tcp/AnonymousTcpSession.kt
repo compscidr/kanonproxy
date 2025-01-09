@@ -94,7 +94,7 @@ class AnonymousTcpSession(
             val oldThreadName = Thread.currentThread().name
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             connect()
-            logger.debug("outgoing job complete")
+            // logger.debug("outgoing job complete")
             Thread.currentThread().name = oldThreadName
             outgoingJob.complete()
         }
@@ -116,14 +116,14 @@ class AnonymousTcpSession(
 
                 // we may have got data while waiting to connect
                 if (outgoingQueue.isNotEmpty()) {
-                    logger.debug("Adding CHANGE request to write")
+                    // logger.debug("Adding CHANGE request to write")
                     synchronized(changeRequests) {
                         changeRequests.add(
                             ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.REGISTER, SelectionKey.OP_WRITE),
                         )
                     }
                 } else {
-                    logger.debug("Adding CHANGE request to read")
+                    // logger.debug("Adding CHANGE request to read")
                     synchronized(changeRequests) {
                         changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, SelectionKey.OP_READ))
                     }

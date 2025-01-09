@@ -102,7 +102,7 @@ class TunTapDevice {
                             changeRequest.channel.register(selector, changeRequest.ops)
                         }
                         CHANGE_OPS -> {
-                            logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
+                            // logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
                             val key = changeRequest.channel.keyFor(selector)
                             key.interestOps(changeRequest.ops)
                         }

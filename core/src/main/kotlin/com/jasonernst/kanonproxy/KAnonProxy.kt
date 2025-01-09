@@ -223,7 +223,7 @@ class KAnonProxy(
             }
             session.incomingQueue.add(Packet(ipHeader, transportHeader, payload))
         } catch (e: IllegalArgumentException) {
-            logger.warn("Got a non SYN packet $transportHeader when we had no session saved, sending RST")
+            logger.warn("Got a non SYN packet when we had no session saved, sending RST $transportHeader")
             outgoingQueue.put(createRstPacket(ipHeader, transportHeader as TcpHeader, TransmissionControlBlock()))
         }
     }
@@ -349,7 +349,8 @@ class KAnonProxy(
                     if (session.lastHeard < System.currentTimeMillis() - STALE_SESSION_MS) {
                         if (session is UdpSession) {
                             logger.warn("Session {} is stale, closing", session)
-                            withContext(Dispatchers.IO) {
+                            withContext(Dispatchers.IO + maintenanceJob) {
+                                Thread.currentThread().name = "Session maintenance thread closer"
                                 session.close(true)
                             }
                             continue
@@ -423,11 +424,19 @@ class KAnonProxy(
             for (entry in sessionTableBySessionKey) {
                 val session = entry.value
                 val state =
-                    if (session is AnonymousTcpSession) {
-                        session.tcpStateMachine.tcpState.value
-                            .toString()
-                    } else {
-                        ""
+                    when (session) {
+                        is AnonymousTcpSession -> {
+                            session.tcpStateMachine.tcpState.value
+                                .toString()
+                        }
+
+                        is UdpSession -> {
+                            "UDP SESSION"
+                        }
+
+                        else -> {
+                            "NOT ANON OR UDP SESSION"
+                        }
                     }
                 logger.debug("  $state ${entry.key}")
             }

@@ -75,7 +75,7 @@ class ProxyServer(
             }
             datagramChannel.configureBlocking(false)
 
-            val server = ProxyServer(icmp = IcmpLinux, datagramChannel = datagramChannel)
+            val server = ProxyServer(icmp = IcmpLinux, datagramChannel = datagramChannel, packetDumper = packetDumper)
             packetDumper.start()
             server.start()
 
@@ -99,14 +99,17 @@ class ProxyServer(
         selectorJob = SupervisorJob()
         selectorScope = CoroutineScope(Dispatchers.IO + selectorJob)
         selectorScope.launch {
+            Thread.currentThread().name = "ProxyServer Selector Loop"
             selectorLoop()
         }
     }
 
     private fun waitUntilShutdown() {
+        logger.debug("Waiting until server shutdown")
         runBlocking {
             selectorJob.join()
         }
+        logger.debug("Server shutdown")
     }
 
     private fun selectorLoop() {
@@ -162,6 +165,7 @@ class ProxyServer(
                 break
             }
         }
+        logger.debug("Selector job done")
         selectorJob.complete()
     }
 
@@ -219,10 +223,6 @@ class ProxyServer(
         }
         logger.debug("Stopping outstanding sessions")
         sessions.values.forEach { it.stop() }
-        logger.debug("All sessions stopped, stopping selector job")
-        runBlocking {
-            selectorJob.join()
-        }
         logger.debug("Server stopped")
     }
 }

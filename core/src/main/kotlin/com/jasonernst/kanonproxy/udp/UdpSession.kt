@@ -43,6 +43,7 @@ class UdpSession(
         trafficAccounting = trafficAccounting,
     ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private var acceptedBytes = 0u
 
     override val channel: DatagramChannel =
         if (initialIpHeader.destinationAddress is Inet4Address) {
@@ -60,15 +61,15 @@ class UdpSession(
             }
             Thread.currentThread().name = "Outgoing handler: ${getKey()}"
             try {
-                logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
+                // logger.debug("UDP connecting to {}:{}", initialIpHeader.destinationAddress, initialTransportHeader.destinationPort)
                 protector.protectUDPSocket(channel.socket())
                 channel.socket().soTimeout = 0
                 channel.configureBlocking(false)
                 channel.connect(InetSocketAddress(initialIpHeader.destinationAddress, initialTransportHeader.destinationPort.toInt()))
-                logger.debug("UDP Connected")
+                // logger.debug("UDP Connected")
                 isConnecting.set(false)
                 synchronized(changeRequests) {
-                    logger.debug("Registering for WRITE")
+                    // logger.debug("Registering for WRITE")
                     changeRequests.add(ChangeRequest(channel, ChangeRequest.REGISTER, OP_WRITE))
                 }
                 startIncomingHandling()
@@ -87,7 +88,7 @@ class UdpSession(
             if (len < 0) {
                 closed = true
             } else if (len > 0) {
-                logger.debug("Read $len bytes")
+                // logger.debug("Read $len bytes")
             }
         } catch (e: Exception) {
             closed = true
@@ -138,7 +139,8 @@ class UdpSession(
         val payload = packet.payload
         try {
             val buffer = ByteBuffer.wrap(payload)
-            outgoingQueue.add(buffer)
+            outgoingQueue.put(acceptedBytes, buffer)
+            acceptedBytes += buffer.limit().toUInt()
             readyToWrite()
         } catch (e: Exception) {
             logger.error("Error writing to UDP channel: $e")

@@ -37,6 +37,7 @@ import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import java.nio.channels.spi.AbstractSelectableChannel
 import java.util.LinkedList
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
@@ -59,7 +60,8 @@ abstract class Session(
     protected lateinit var outgoingScope: CoroutineScope
 
     val incomingQueue = LinkedBlockingDeque<Packet>()
-    val outgoingQueue = LinkedBlockingDeque<ByteBuffer>()
+    val outgoingQueue = ConcurrentHashMap<UInt, ByteBuffer>() // starting seq, byte buffer (so we can send in order)
+    var outgoingStartingSeq: UInt = 0u
     private lateinit var incomingJob: CompletableJob
     private lateinit var incomingScope: CoroutineScope
     protected val isRunning = AtomicBoolean(true)
@@ -141,7 +143,7 @@ abstract class Session(
             return
         }
         if (isConnecting.get().not()) {
-            logger.debug("Adding CHANGE request to write")
+            // logger.debug("Adding CHANGE request to write")
             synchronized(changeRequests) {
                 changeRequests.add(ChangeRequest(channel as AbstractSelectableChannel, ChangeRequest.CHANGE_OPS, SelectionKey.OP_WRITE))
             }
@@ -180,11 +182,11 @@ abstract class Session(
                         for (changeRequest in changeRequests) {
                             when (changeRequest.type) {
                                 ChangeRequest.REGISTER -> {
-                                    logger.debug("Processing REGISTER: ${changeRequest.ops}")
+                                    // logger.debug("Processing REGISTER: ${changeRequest.ops}")
                                     changeRequest.channel.register(selector, changeRequest.ops)
                                 }
                                 ChangeRequest.CHANGE_OPS -> {
-                                    logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
+                                    // logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
                                     val key = changeRequest.channel.keyFor(selector)
                                     key.interestOps(changeRequest.ops)
                                 }
@@ -243,26 +245,33 @@ abstract class Session(
                                 logger.error("INVALID KEY!!! ${keyToString(it)}")
                             }
                             if (it.isWritable && it.isValid) {
-                                logger.debug("WRITABLE KEY: ${keyToString(it)}")
+                                // logger.debug("WRITABLE KEY: ${keyToString(it)}")
                                 // could do a while loop here, but others might starve
-                                if (outgoingQueue.isNotEmpty()) {
-                                    val queue = outgoingQueue.take()
-                                    logger.debug("Writing ${queue.limit()} bytes to remote channel")
-                                    while (queue.hasRemaining()) {
-                                        val bytesWritten = channel.write(queue)
-                                        trafficAccounting.recordToInternet(bytesWritten.toLong())
-                                    }
+                                val sortedBuffers = outgoingQueue.entries.sortedBy { it.key }
+                                val firstEntry = sortedBuffers.first()
+                                val queue = firstEntry.value
+                                logger.debug("Writing ${queue.limit()} bytes to remote channel")
+                                val bytesInQueue = queue.limit()
+                                while (queue.hasRemaining()) {
+                                    val bytesWritten = channel.write(queue)
+                                    trafficAccounting.recordToInternet(bytesWritten.toLong())
                                 }
-                                if (outgoingQueue.isNotEmpty()) {
-                                    logger.debug("Outgoing queue not empty, continuing interest in writes")
+                                outgoingQueue.remove(firstEntry.key)
+                                outgoingStartingSeq += bytesInQueue.toUInt()
+                                if (haveContiguousOutgoingData()) {
+                                    logger.debug("Still have contiguous outgoing data, continuing interest in writes")
                                     it.interestOps(SelectionKey.OP_WRITE)
                                 } else {
-                                    logger.debug("Queue empty, returning to read mode")
+                                    if (outgoingQueue.isEmpty()) {
+                                       logger.debug("Queue empty, returning to read mode")
+                                    } else {
+                                        logger.debug("Queue not empty, but also not contiguous, returning to read")
+                                    }
                                     it.interestOps(SelectionKey.OP_READ)
                                 }
                             }
                             if (it.isReadable && it.isValid) {
-                                logger.debug("READABLE KEY: ${keyToString(it)}")
+                                // logger.debug("READABLE KEY: ${keyToString(it)}")
                                 if (!read()) {
                                     logger.warn("Remote read failed, closing selector")
                                     it.interestOps(0)
@@ -273,7 +282,7 @@ abstract class Session(
                                 // AFAIK its only possible to be here if its a SocketChannel
                                 val socketChannel = it.channel() as SocketChannel
                                 if (socketChannel.isConnectionPending) {
-                                    logger.debug("CONNECTING PENDING KEY: ${keyToString(it)}")
+                                    // logger.debug("CONNECTING PENDING KEY: ${keyToString(it)}")
                                     try {
                                         val result = socketChannel.finishConnect()
                                         if (result) {
@@ -312,6 +321,24 @@ abstract class Session(
             logger.warn("selector job complete")
             Thread.currentThread().name = oldThreadName
             selectorJob.complete()
+        }
+    }
+
+    /**
+     * Will return true if the next available buffer starts at the position of outgoingStartingSeq
+     */
+    fun haveContiguousOutgoingData(): Boolean {
+        if (outgoingQueue.isEmpty()) {
+            return false
+        }
+        val sortedBuffers = outgoingQueue.entries.sortedBy { it.key }
+        val firstEntry = sortedBuffers.first()
+
+        if (firstEntry.key == outgoingStartingSeq) {
+            return true
+        } else {
+            logger.debug("Not contiguous, startingSeq: $outgoingStartingSeq lowestSeq: ${firstEntry.key}")
+            return false
         }
     }
 
@@ -418,7 +445,7 @@ abstract class Session(
         packet: Packet? = null,
         isIncomingJob: Boolean = false,
     ) {
-        logger.debug("Closing session")
+        logger.debug("Closing session: ${getKey()}")
         isRunning.set(false)
         try {
             logger.debug("Closing selector")
@@ -455,14 +482,16 @@ abstract class Session(
             logger.debug("Session removed")
         }
         runBlocking {
-            logger.debug("Stopping outgoing job")
+            logger.debug("Stopping outgoing job for session ${getKey()}")
             outgoingJob.cancelAndJoin()
-            logger.debug("Outgoing job stopped")
+            logger.debug("Outgoing job stopped for session ${getKey()}")
 
             if (isIncomingJob) {
                 logger.debug("Not cancelling incoming job because we're currently running in it")
             } else {
                 logger.debug("Stopping incoming job")
+                incomingQueue.clear()
+                incomingQueue.add(SentinelPacket)
                 incomingJob.cancelAndJoin()
                 logger.debug("Incoming job stopped")
             }
