@@ -40,7 +40,7 @@ jobs:
           mkdir -p ./core/build/reports/ &&
           tar -czvf kanonproxy-reports.tar.gz -C core/build reports
       - name: Upload Reports
-        uses: actions/upload-artifact@v4.5.0
+        uses: actions/upload-artifact@v4.6.0
         if: always()
         with:
           name: kanonproxy-reports
