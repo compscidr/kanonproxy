@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.jasonernst.kanonproxy"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.jasonernst.kanonproxy"
         minSdk = 29
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
