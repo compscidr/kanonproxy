@@ -5,7 +5,7 @@ plugins {
     id("jacoco")
     alias(libs.plugins.git.version)
     alias(libs.plugins.sonatype.maven.central)
-    alias(libs.plugins.gradleup.nmcp)
+    alias(libs.plugins.gradleup.nmcp.aggregation)
 }
 
 java {
@@ -70,7 +70,7 @@ gitVersioning.apply {
 
 // see: https://github.com/vanniktech/gradle-maven-publish-plugin/issues/747#issuecomment-2066762725
 // and: https://github.com/GradleUp/nmcp
-nmcp {
+nmcpAggregation {
     val props = project.properties
     centralPortal {
         username = props["centralPortalToken"] as String? ?: ""

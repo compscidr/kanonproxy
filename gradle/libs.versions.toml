@@ -2,23 +2,23 @@
 androidx_preference = "1.2.1"
 accompanistPermissions = "0.37.3"
 compose-activity = "1.10.1"
-compose-bom = "2025.06.00"
-compose_ui_tooling = "1.8.2"
+compose-bom = "2025.07.00"
+compose_ui_tooling = "1.8.3"
 icmp = "1.0.0"
 jna = "5.17.0"
 jnr_enxio = "0.32.18"
-jupiter = "5.13.1"
-kotlin = "2.1.21"
-kotlinter = "5.1.1"
+jupiter = "5.13.4"
+kotlin = "2.2.0"
+kotlinter = "5.2.0"
 knet = "0.1.9"
 logback-android = "3.0.0"
 logback-classic = "1.5.18"
 material = "1.12.0"
-mockk = "1.14.2"
+mockk = "1.14.5"
 packetdumper = "0.0.12"
 slf4j = "2.0.17"
 testservers = "0.0.2"
-agp = "8.10.1"
+agp = "8.12.0"
 kotlin-version = "2.0.21"
 junit = "4.13.2"
 runner = "1.0.2"
@@ -61,7 +61,7 @@ git-version = { id = "me.qoomon.git-versioning", version = "6.4.4" }
 jetbrains-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlinter = { id = "org.jmailen.kotlinter", version.ref = "kotlinter" }
 sonatype-maven-central = { id = "com.vanniktech.maven.publish", version = "0.34.0" }
-gradleup-nmcp = { id = "com.gradleup.nmcp", version = "0.1.5"}
+gradleup-nmcp-aggregation = { id = "com.gradleup.nmcp.aggregation", version = "1.0.2"}
 android-application = { id = "com.android.application", version.ref = "agp" }
 jetbrains-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
