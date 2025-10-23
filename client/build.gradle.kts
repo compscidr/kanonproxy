@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.jvm)
     alias(libs.plugins.kotlinter)
     id("java-library")
+    id("application")
     id("jacoco")
     alias(libs.plugins.git.version)
     alias(libs.plugins.sonatype.maven.central)
@@ -31,6 +32,10 @@ kotlin {
 
 jacoco {
     toolVersion = "0.8.14"
+}
+
+application {
+    mainClass.set("com.jasonernst.kanonproxy.LinuxProxyClient")
 }
 
 dependencies {
