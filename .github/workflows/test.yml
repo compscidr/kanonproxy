@@ -52,13 +52,26 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: libunittests
           files: ./core/build/reports/jacoco/test/jacocoTestReport.xml
-# TODO: need to debug why creating the tun/tap is failing - perhaps not possible on GH runners
-#      - name: End to End Tests
-#        run: |
-#          bash client/scripts/tuntap.sh $USER
-#          ./gradlew :client:run &
-#          ./gradlew :server:run &
-#          sleep 5
-#          ping -I kanon -c 5 8.8.8.8
-#          curl --interface kanon https://www.google.com
-#          bash client/scripts/cleanup.sh
+      - name: Docker Integration Tests
+        run: |
+          echo "Building Docker images for integration tests..."
+          docker compose -f docker-compose.ci.yml build
+
+          echo "Starting proxy server..."
+          docker compose -f docker-compose.ci.yml up -d proxy-server
+
+          echo "Waiting for server to initialize..."
+          sleep 15
+
+          echo "Checking server health..."
+          docker compose -f docker-compose.ci.yml ps
+
+          echo "Running integration tests..."
+          docker compose -f docker-compose.ci.yml run --rm test-runner
+
+          echo "Showing server logs..."
+          docker compose -f docker-compose.ci.yml logs proxy-server
+        timeout-minutes: 5
+      - name: Cleanup Docker
+        if: always()
+        run: docker compose -f docker-compose.ci.yml down

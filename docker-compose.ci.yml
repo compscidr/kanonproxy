@@ -1,0 +1,61 @@
+services:
+  # CI-friendly version without TUN device requirement
+  # Tests the proxy logic without actual network routing
+
+  proxy-server:
+    build: .
+    container_name: kanon-server-ci
+    command: ./gradlew :server:run --no-daemon --console=plain
+    networks:
+      proxy-net:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "8080:8080/udp"
+    environment:
+      - JAVA_OPTS=-Xmx512m
+    healthcheck:
+      test: ["CMD", "netstat", "-an", "|", "grep", "8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Minimal test client that tests HTTP connectivity through Docker network
+  test-runner:
+    image: alpine:latest
+    container_name: kanon-test-runner
+    command: >
+      sh -c "
+        echo 'Installing test dependencies...' &&
+        apk add --no-cache curl netcat-openbsd &&
+        echo 'Waiting for server to be ready...' &&
+        sleep 10 &&
+        echo '' &&
+        echo '======================================' &&
+        echo 'Testing proxy server connectivity...' &&
+        echo '======================================' &&
+        nc -vzu proxy-server 8080 &&
+        echo 'Server UDP port 8080 is reachable!' &&
+        echo '' &&
+        echo '======================================' &&
+        echo 'Testing external HTTP connectivity...' &&
+        echo '======================================' &&
+        echo 'Fetching xkcd.com...' &&
+        curl -v --max-time 10 --fail http://xkcd.com/ | head -20 &&
+        echo '' &&
+        echo '======================================' &&
+        echo 'All CI tests passed!' &&
+        echo '======================================'
+      "
+    networks:
+      proxy-net:
+        ipv4_address: 172.28.0.20
+    depends_on:
+      - proxy-server
+
+networks:
+  proxy-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

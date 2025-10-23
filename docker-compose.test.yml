@@ -1,0 +1,93 @@
+services:
+  # Proxy Server - receives packets from clients and forwards them
+  proxy-server:
+    build: .
+    container_name: kanon-server
+    command: ./gradlew :server:run --no-daemon --console=plain
+    networks:
+      proxy-net:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "8080:8080/udp"
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - JAVA_OPTS=-Xmx512m
+    healthcheck:
+      test: ["CMD", "netstat", "-an", "|", "grep", "8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Proxy Client - intercepts traffic via TUN and sends to server
+  proxy-client:
+    build: .
+    container_name: kanon-client
+    command: >
+      sh -c "
+        echo 'Setting up TUN device...' &&
+        /app/tuntap.sh root &&
+        echo 'Setting up routing...' &&
+        /app/setup-routing.sh proxy-server &&
+        echo 'TUN device ready. Starting proxy client...' &&
+        ./gradlew :client:run --no-daemon --console=plain --args='proxy-server 8080' &&
+        echo 'Client stopped. Keeping container alive for debugging...' &&
+        sleep infinity
+      "
+    networks:
+      proxy-net:
+        ipv4_address: 172.28.0.11
+    depends_on:
+      - proxy-server
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    privileged: true
+    environment:
+      - JAVA_OPTS=-Xmx512m
+
+  # Test Client - routes all traffic through the proxy
+  test-client:
+    image: alpine:latest
+    container_name: kanon-test-client
+    command: >
+      sh -c "
+        echo 'Installing test tools...' &&
+        apk add --no-cache curl wget bind-tools iputils tcpdump &&
+        echo '==================================' &&
+        echo 'Test client ready!' &&
+        echo 'Network configuration:' &&
+        ip addr show &&
+        echo '==================================' &&
+        echo 'Routes:' &&
+        ip route show &&
+        echo '==================================' &&
+        echo 'Keeping container running for manual tests...' &&
+        sleep infinity
+      "
+    network_mode: "service:proxy-client"
+    depends_on:
+      - proxy-client
+
+  # Monitoring container for packet capture
+  monitor:
+    image: nicolaka/netshoot:latest
+    container_name: kanon-monitor
+    command: sleep infinity
+    networks:
+      proxy-net:
+        ipv4_address: 172.28.0.100
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./captures:/captures
+
+networks:
+  proxy-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

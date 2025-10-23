@@ -1,0 +1,60 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build outputs
+build/
+**/build/
+.gradle/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# Android
+android/build/
+*.apk
+*.ap_
+*.dex
+local.properties
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Test outputs
+captures/
+*.pcap
+*.pcapng
+
+# Signing files
+*.keystore
+*.jks
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose*.yml
+!docker-compose.test.yml
+Dockerfile
+.dockerignore
+
+# Scripts (except the ones we need)
+*.sh
+!client/scripts/tuntap.sh
+!client/scripts/cleanup.sh
+
+# CI
+.github/

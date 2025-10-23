@@ -1,0 +1,84 @@
+name: Docker E2E Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  docker-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build Docker images
+      run: docker compose -f docker-compose.ci.yml build
+
+    - name: Run unit tests in Docker
+      run: docker compose -f docker-compose.ci.yml run --rm test-runner
+
+    - name: Check server is running
+      run: |
+        docker compose -f docker-compose.ci.yml up -d proxy-server
+        sleep 10
+        docker compose -f docker-compose.ci.yml ps
+        # Test UDP port is open
+        docker run --network kanonproxy_proxy-net --rm alpine sh -c "
+          apk add --no-cache netcat-openbsd &&
+          nc -vzu 172.28.0.10 8080
+        "
+
+    - name: Test TCP connectivity (if supported)
+      run: |
+        docker run --network kanonproxy_proxy-net --rm alpine sh -c "
+          apk add --no-cache curl &&
+          # Test external connectivity through Docker network
+          curl -v --max-time 10 http://example.com || echo 'External TCP blocked in CI'
+        "
+
+    - name: Cleanup
+      if: always()
+      run: docker compose -f docker-compose.ci.yml down
+
+  # Try privileged containers (may fail on some CI providers)
+  docker-privileged-test:
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Don't fail the build if this doesn't work
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Attempt TUN device test
+      run: |
+        docker run --rm --privileged --cap-add=NET_ADMIN \
+          --device=/dev/net/tun alpine sh -c "
+            apk add --no-cache iproute2 &&
+            ip tuntap add dev test0 mode tun &&
+            ip link show test0 &&
+            echo 'TUN device creation works!' ||
+            echo 'TUN device creation failed (expected on most CI)'
+          "
+
+    - name: Run full Docker test environment
+      run: |
+        docker compose -f docker-compose.test.yml build
+        docker compose -f docker-compose.test.yml up -d
+        sleep 15
+
+        # These tests might fail due to ICMP/firewall restrictions
+        docker exec kanon-test-client sh -c "
+          # TCP should work
+          curl -v --max-time 10 http://example.com || echo 'TCP test failed'
+
+          # ICMP will likely fail in CI
+          ping -c 2 -W 3 8.8.8.8 || echo 'ICMP blocked (expected in CI)'
+        " || echo "Full tests failed (expected in restricted CI)"
+
+    - name: Cleanup
+      if: always()
+      run: docker compose -f docker-compose.test.yml down
