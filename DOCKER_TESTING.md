@@ -130,7 +130,7 @@ docker logs -f kanon-server
 docker logs -f kanon-client
 
 # Follow logs in real-time
-docker compose -f docker compose.test.yml logs -f
+docker compose -f docker-compose.test.yml logs -f
 ```
 
 ### Inspect network configuration
@@ -183,12 +183,12 @@ docker info
 sudo netstat -anu | grep 8080
 
 # View container logs
-docker compose -f docker compose.test.yml logs
+docker compose -f docker-compose.test.yml logs
 ```
 
 ### TUN device creation fails
 
-The client container needs privileged mode and access to `/dev/net/tun`. This is configured in docker compose.test.yml:
+The client container needs privileged mode and access to `/dev/net/tun`. This is configured in docker-compose.test.yml:
 
 ```yaml
 cap_add:
@@ -228,16 +228,18 @@ docker logs kanon-client
 
 ### Custom server configuration
 
-Edit `docker compose.test.yml` to change server settings:
+Edit `docker-compose.test.yml` to change server settings:
 
 ```yaml
 proxy-server:
-  command: java -jar server.jar 9090  # Custom port
+  command: ./gradlew :server:run --no-daemon --console=plain --args='9090'  # Custom port
 ```
+
+Note: The server uses Gradle's run task, which automatically handles all dependencies and classpath.
 
 ### Add more test clients
 
-Add to `docker compose.test.yml`:
+Add to `docker-compose.test.yml`:
 
 ```yaml
 test-client-2:
@@ -290,13 +292,13 @@ Note: CI runners need Docker and may require privileged mode.
 ### Remove all containers and networks
 
 ```bash
-docker compose -f docker compose.test.yml down
+docker compose -f docker-compose.test.yml down
 ```
 
 ### Remove images and rebuild from scratch
 
 ```bash
-docker compose -f docker compose.test.yml down --rmi all
+docker compose -f docker-compose.test.yml down --rmi all
 ./start-test-env.sh
 ```
 
@@ -325,7 +327,7 @@ rm -rf captures/
 ## Support
 
 For issues specific to the Docker setup:
-- Check container logs: `docker compose -f docker compose.test.yml logs`
+- Check container logs: `docker compose -f docker-compose.test.yml logs`
 - Verify Docker version: `docker --version`
 - Check system resources: `docker system df`
 

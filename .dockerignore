@@ -55,6 +55,7 @@ Dockerfile
 *.sh
 !client/scripts/tuntap.sh
 !client/scripts/cleanup.sh
+!client/scripts/setup-routing.sh
 
 # CI
 .github/

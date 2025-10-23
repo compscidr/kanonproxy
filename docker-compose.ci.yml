@@ -14,7 +14,7 @@ services:
     environment:
       - JAVA_OPTS=-Xmx512m
     healthcheck:
-      test: ["CMD", "netstat", "-an", "|", "grep", "8080"]
+      test: ["CMD-SHELL", "netstat -an | grep 8080"]
       interval: 5s
       timeout: 3s
       retries: 3
