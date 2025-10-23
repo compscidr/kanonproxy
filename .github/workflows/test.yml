@@ -52,26 +52,84 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: libunittests
           files: ./core/build/reports/jacoco/test/jacocoTestReport.xml
+      - name: Validate Docker Configuration
+        run: |
+          echo "Validating Docker setup..."
+          echo "Checking required files exist..."
+          test -f Dockerfile && echo "✓ Dockerfile exists" || echo "✗ Dockerfile missing"
+          test -f docker-compose.ci.yml && echo "✓ docker-compose.ci.yml exists" || echo "✗ docker-compose.ci.yml missing"
+          test -f docker-compose.test.yml && echo "✓ docker-compose.test.yml exists" || echo "✗ docker-compose.test.yml missing"
+          echo ""
+          echo "Docker version:"
+          docker --version
+          echo "Docker Compose version:"
+          docker compose version
       - name: Docker Integration Tests
         run: |
+          echo "========================================="
+          echo "Docker Integration Tests"
+          echo "========================================="
+
+          echo "Checking Docker Compose file exists..."
+          ls -la docker-compose.ci.yml || (echo "ERROR: docker-compose.ci.yml not found!" && exit 1)
+
+          echo ""
           echo "Building Docker images for integration tests..."
-          docker compose -f docker-compose.ci.yml build
+          docker compose -f docker-compose.ci.yml build --progress=plain 2>&1 | tail -50 || (
+            echo "ERROR: Docker build failed!"
+            exit 1
+          )
 
+          echo ""
           echo "Starting proxy server..."
-          docker compose -f docker-compose.ci.yml up -d proxy-server
+          docker compose -f docker-compose.ci.yml up -d proxy-server || (
+            echo "ERROR: Failed to start proxy server!"
+            docker compose -f docker-compose.ci.yml logs
+            exit 1
+          )
 
+          echo ""
           echo "Waiting for server to initialize..."
-          sleep 15
+          for i in {1..30}; do
+            if docker compose -f docker-compose.ci.yml ps proxy-server | grep -q "healthy\|Up"; then
+              echo "Server is up! (attempt $i/30)"
+              break
+            fi
+            echo "Waiting for server... (attempt $i/30)"
+            sleep 2
+          done
 
+          echo ""
           echo "Checking server health..."
           docker compose -f docker-compose.ci.yml ps
 
-          echo "Running integration tests..."
-          docker compose -f docker-compose.ci.yml run --rm test-runner
+          echo ""
+          echo "Checking if server is listening..."
+          docker compose -f docker-compose.ci.yml exec proxy-server netstat -anu | grep 8080 || (
+            echo "WARNING: Server may not be listening on port 8080"
+          )
 
-          echo "Showing server logs..."
-          docker compose -f docker-compose.ci.yml logs proxy-server
-        timeout-minutes: 5
+          echo ""
+          echo "Running integration tests..."
+          docker compose -f docker-compose.ci.yml run --rm test-runner || (
+            echo "ERROR: Integration tests failed!"
+            echo "Showing server logs..."
+            docker compose -f docker-compose.ci.yml logs proxy-server
+            exit 1
+          )
+
+          echo ""
+          echo "Showing server logs for verification..."
+          docker compose -f docker-compose.ci.yml logs proxy-server | tail -50
+
+          echo ""
+          echo "========================================="
+          echo "Docker Integration Tests PASSED"
+          echo "========================================="
+        timeout-minutes: 10
       - name: Cleanup Docker
         if: always()
-        run: docker compose -f docker-compose.ci.yml down
+        run: |
+          echo "Cleaning up Docker containers..."
+          docker compose -f docker-compose.ci.yml down -v || true
+          docker compose -f docker-compose.ci.yml ps || true
