@@ -1,7 +1,7 @@
 [versions]
 androidx_preference = "1.2.1"
 accompanistPermissions = "0.37.3"
-compose-activity = "1.11.0"
+compose-activity = "1.12.1"
 compose-bom = "2025.12.00"
 compose_ui_tooling = "1.9.4"
 icmp = "1.0.0"
