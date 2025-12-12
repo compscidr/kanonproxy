@@ -106,6 +106,7 @@ abstract class Session(
                         trafficAccounting,
                     )
                 }
+
                 IpType.TCP.value -> {
                     val tcpHeader = initialTransportHeader as TcpHeader
                     if (tcpHeader.isSyn().not()) {
@@ -122,6 +123,7 @@ abstract class Session(
                         trafficAccounting,
                     )
                 }
+
                 else -> {
                     throw IllegalArgumentException("Unsupported protocol for session")
                 }
@@ -183,6 +185,7 @@ abstract class Session(
                                     logger.debug("Processing REGISTER: ${changeRequest.ops}")
                                     changeRequest.channel.register(selector, changeRequest.ops)
                                 }
+
                                 ChangeRequest.CHANGE_OPS -> {
                                     logger.debug("Processing CHANGE_OPS: ${changeRequest.ops}")
                                     val key = changeRequest.channel.keyFor(selector)
