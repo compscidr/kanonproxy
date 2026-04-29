@@ -117,16 +117,18 @@ The script will:
    listener on port 8080) — logs to `build/demo-logs/server.log`.
 3. Start the proxy client with `./gradlew :client:run --args="127.0.0.1 8080"` —
    logs to `build/demo-logs/client.log`.
-4. Add a host route for the target IP through the `kanon` device so the kernel
-   sends matching packets through the TUN, where the client picks them up.
-5. Run `curl -v http://<target>/` and print the response.
+4. Run `sudo curl -v --interface kanon http://<target>/`. `--interface kanon`
+   uses `SO_BINDTODEVICE` to pin curl's socket to the TUN, so curl's packets
+   go into the proxy without touching the kernel's main route table. The
+   server's own outbound TCP socket stays unbound and follows the normal
+   default route — that's what prevents the server from looping back into
+   its own VPN.
 
 Tear-down:
 ```bash
 bash client/scripts/cleanup.sh
 ```
-This kills the server/client/Gradle workers, drops every route bound to the
-`kanon` device, and removes the TUN interface.
+This kills the server/client/Gradle workers and removes the TUN interface.
 
 ### Step-by-step (without the script)
 
@@ -142,12 +144,10 @@ bash client/scripts/tuntap.sh "$USER"
 # Terminal 3 — client (TUN ↔ UDP to 127.0.0.1:8080)
 ./gradlew :client:run --args="127.0.0.1 8080"
 
-# Terminal 4 — route a target through kanon and curl it
-sudo ip route add 1.1.1.1 dev kanon
-curl -v http://1.1.1.1/
+# Terminal 4 — curl pinned to the kanon TUN (sudo is needed for SO_BINDTODEVICE)
+sudo curl -v --interface kanon http://1.1.1.1/
 
 # Cleanup
-sudo ip route del 1.1.1.1 dev kanon
 bash client/scripts/cleanup.sh
 ```
 
