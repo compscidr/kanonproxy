@@ -84,3 +84,68 @@ val response = kanonProxy.takeResponse()
 ```
 
 There are more examples of usage in the [tests](core/src/test/kotlin/com/jasonernst/kanonproxy).
+
+## Local Linux demo
+
+A scripted end-to-end demo that brings up the server, the client, and tunnels a
+single curl request through the proxy.
+
+Prerequisites:
+- Linux with `iproute2` and `sudo` (the script creates a TUN device and adds a
+  route — both require root)
+- JDK 21 (the wrapper handles Gradle itself)
+
+One-shot:
+```bash
+bash client/scripts/demo.sh           # uses 1.1.1.1 as the curl target
+bash client/scripts/demo.sh 9.9.9.9   # or pick your own HTTP-reachable IP
+```
+
+The script will:
+1. Run `client/scripts/tuntap.sh` to create the `kanon` TUN device
+   (`10.0.1.1/24`, MTU 1024).
+2. Start the proxy server with `./gradlew :server:run --args="8080"` (UDP
+   listener on port 8080) — logs to `build/demo-logs/server.log`.
+3. Start the proxy client with `./gradlew :client:run --args="127.0.0.1 8080"` —
+   logs to `build/demo-logs/client.log`.
+4. Add a host route for the target IP through the `kanon` device so the kernel
+   sends matching packets through the TUN, where the client picks them up.
+5. Run `curl -v http://<target>/` and print the response.
+
+Tear-down:
+```bash
+bash client/scripts/cleanup.sh
+```
+This kills the server/client/Gradle workers, drops every route bound to the
+`kanon` device, and removes the TUN interface.
+
+### Step-by-step (without the script)
+
+If you want to run it by hand to see what each piece does:
+
+```bash
+# Terminal 1 — TUN device
+bash client/scripts/tuntap.sh "$USER"
+
+# Terminal 2 — server (UDP :8080)
+./gradlew :server:run --args="8080"
+
+# Terminal 3 — client (TUN ↔ UDP to 127.0.0.1:8080)
+./gradlew :client:run --args="127.0.0.1 8080"
+
+# Terminal 4 — route a target through kanon and curl it
+sudo ip route add 1.1.1.1 dev kanon
+curl -v http://1.1.1.1/
+
+# Cleanup
+sudo ip route del 1.1.1.1 dev kanon
+bash client/scripts/cleanup.sh
+```
+
+While the demo is running, both client and server expose a live pcap-ng stream
+([packetdumper](https://github.com/compscidr/packetdumper)) that Wireshark can
+attach to directly:
+```bash
+wireshark -k -i TCP@127.0.0.1:19000   # client-side dumper
+wireshark -k -i TCP@127.0.0.1:19001   # server-side dumper (DEFAULT_PORT + 1)
+```

@@ -2,10 +2,15 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.jvm)
     alias(libs.plugins.kotlinter)
     id("java-library")
+    id("application")
     id("jacoco")
     alias(libs.plugins.git.version)
     alias(libs.plugins.sonatype.maven.central)
     alias(libs.plugins.gradleup.nmcp.aggregation)
+}
+
+application {
+    mainClass.set("com.jasonernst.kanonproxy.ProxyServer")
 }
 
 java {
