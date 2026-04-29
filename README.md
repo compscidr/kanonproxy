@@ -100,6 +100,10 @@ An end-to-end demo on a single Linux host: a kanonproxy server, a kanonproxy
 client tunneling a TUN device to that server, and a `curl` issued through the
 proxy.
 
+[![Local Linux demo](https://img.youtube.com/vi/_ypo_3PYqTM/maxresdefault.jpg)](https://youtu.be/_ypo_3PYqTM)
+
+(Click to watch on YouTube — the steps below produce what the video shows.)
+
 Prerequisites:
 - Linux with `iproute2` and `sudo` (TUN setup and `--interface` both need root)
 - JDK 21 (the Gradle wrapper handles Gradle itself)
