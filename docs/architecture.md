@@ -53,26 +53,7 @@ state machine, and platform glue.
 ## 2. Data flow — one packet round-trip
 
 ```mermaid
-flowchart TD
-    os[("OS / TUN-TAP / Android VPN<br/>raw IP byte stream")]
-
-    subgraph clientMod["<b>client/</b> — LinuxProxyClient · AndroidClient extend ProxyClient"]
-        cParse["knet: Packet.parseStream"]
-        cChan["DatagramChannel<br/>(UDP to server)"]
-        cWrite["tunWrite ← packet.toByteArray()"]
-        cParse -- "parsed Packets" --> cChan
-        cChan -- "from server" --> cWrite
-    end
-
-    subgraph serverMod["<b>server/</b> — ProxyServer"]
-        sRead["readFromClient()<br/>knet: Packet.parseStream"]
-        sHandle["kAnonProxy.handlePackets()"]
-        sTake["kAnonProxy.takeResponse()<br/>via ProxySession"]
-        sOut["enqueueOutgoing(buffer)"]
-        sRead --> sHandle
-        sTake --> sOut
-    end
-
+flowchart TB
     subgraph coreMod["<b>core/</b> — KAnonProxy (pure logic, no I/O of its own)"]
         kHandle["handlePacket(packet)"]
         kSess["Session table<br/>(per clientAddress, per 5-tuple)"]
@@ -84,21 +65,48 @@ flowchart TD
         kTcpUdp -.->|on connect failure| kErr
     end
 
+    subgraph midRow[" "]
+        direction LR
+        subgraph clientMod["<b>client/</b> — LinuxProxyClient · AndroidClient extend ProxyClient"]
+            cParse["knet: Packet.parseStream"]
+            cChan["DatagramChannel<br/>(UDP to server)"]
+            cWrite["tunWrite ← packet.toByteArray()"]
+            cParse -- "parsed Packets" --> cChan
+            cChan -- "from server" --> cWrite
+        end
+        subgraph serverMod["<b>server/</b> — ProxyServer"]
+            sRead["readFromClient()<br/>knet: Packet.parseStream"]
+            sHandle["kAnonProxy.handlePackets()"]
+            sTake["kAnonProxy.takeResponse()<br/>via ProxySession"]
+            sOut["enqueueOutgoing(buffer)"]
+            sRead --> sHandle
+            sTake --> sOut
+        end
+    end
+
+    os[("OS / TUN-TAP / Android VPN<br/>raw IP byte stream")]
+    inet[("public Internet")]
     pdLib(["<b>packetdumper</b><br/>dumpBuffer(...)"])
     icmpLib(["<b>icmp</b> lib<br/>IcmpLinux / IcmpAndroid"])
-    inet[("public Internet")]
 
-    os -- "bytes in" --> cParse
-    cWrite -- "bytes out" --> os
-    cChan == "UDP" ==> sRead
-    sOut == "UDP" ==> cChan
-    sHandle == "Packet (knet)" ==> kHandle
-    kTcpUdp -- "responses" --> sTake
-    kIcmp -- "responses" --> sTake
+    %% core ↔ server
+    kHandle == "Packet (knet)" ==> sHandle
+    sTake -- "responses" --> kTcpUdp
+    sTake -- "responses" --> kIcmp
 
+    %% server ↔ client (UDP)
+    sRead == "UDP" ==> cChan
+    cChan == "UDP" ==> sOut
+
+    %% client ↔ OS
+    cParse -- "bytes in" --> os
+    os -- "bytes out" --> cWrite
+
+    %% core ↔ external services
     kTcpUdp <--> inet
     kIcmp <-.-> icmpLib
 
+    %% Packetdumper hooks (each packet on read/write)
     cParse -.->|each packet| pdLib
     cWrite -.->|each packet| pdLib
     sRead -.->|each packet| pdLib
@@ -108,11 +116,17 @@ flowchart TD
     classDef io fill:#6b7280,stroke:#1f2937,stroke-width:2px,color:#ffffff;
     classDef node fill:#1f6feb,stroke:#0d419d,stroke-width:2px,color:#ffffff;
     classDef group fill:#1f6feb22,stroke:#58a6ff,stroke-width:2px,color:#c9d1d9;
+    classDef invisGroup fill:transparent,stroke:transparent;
     class pdLib,icmpLib ext;
     class os,inet io;
     class cParse,cChan,cWrite,sRead,sHandle,sTake,sOut,kHandle,kSess,kTcpUdp,kIcmp,kErr node;
     class clientMod,serverMod,coreMod group;
+    class midRow invisGroup;
 ```
+
+Note: arrow directions in this diagram describe **rank/layout intent** (core on top,
+server + client below) rather than the actual data direction. Data flows in both
+directions on every edge — read the edge labels for what crosses the boundary.
 
 ## 3. Library responsibilities — who owns what
 
