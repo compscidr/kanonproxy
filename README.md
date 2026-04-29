@@ -96,22 +96,24 @@ There are more examples of usage in the [tests](core/src/test/kotlin/com/jasoner
 
 ## Local Linux demo
 
-A scripted end-to-end demo that brings up the server, the client, and tunnels a
-single curl request through the proxy.
+An end-to-end demo on a single Linux host: a kanonproxy server, a kanonproxy
+client tunneling a TUN device to that server, and a `curl` issued through the
+proxy.
 
 Prerequisites:
-- Linux with `iproute2` and `sudo` (the script creates a TUN device and adds a
-  route — both require root)
-- JDK 21 (the wrapper handles Gradle itself)
+- Linux with `iproute2` and `sudo` (TUN setup and `--interface` both need root)
+- JDK 21 (the Gradle wrapper handles Gradle itself)
+- `./gradlew :server:assemble :client:assemble` succeeds
 
-One-shot:
+### Path A — scripted (one-shot)
+
 ```bash
 bash client/scripts/demo.sh           # uses 1.1.1.1 as the curl target
 bash client/scripts/demo.sh 9.9.9.9   # or pick your own HTTP-reachable IP
 ```
 
 The script will:
-1. Run `client/scripts/tuntap.sh` to create the `kanon` TUN device
+1. Run `client/scripts/tuntap.sh` to create the persistent `kanon` TUN device
    (`10.0.1.1/24`, MTU 1024).
 2. Start the proxy server with `./gradlew :server:run --args="8080"` (UDP
    listener on port 8080) — logs to `build/demo-logs/server.log`.
@@ -124,35 +126,79 @@ The script will:
    default route — that's what prevents the server from looping back into
    its own VPN.
 
+The server and client stay running after the script finishes, so you can fire
+more requests against the same proxy:
+```bash
+sudo curl -v --interface kanon http://example.com/
+sudo curl -v --interface kanon http://1.1.1.1/
+```
+Each call creates a new session — look for `New session: ...` lines in
+`tail -f build/demo-logs/server.log`.
+
 Tear-down:
 ```bash
 bash client/scripts/cleanup.sh
 ```
-This kills the server/client/Gradle workers and removes the TUN interface.
+This SIGTERMs the server/client/Gradle workers (then SIGKILLs anything left),
+retries `ip tuntap del` to handle any fd-release race, and removes the TUN
+interface. It's idempotent — safe to rerun.
 
-### Step-by-step (without the script)
+### Path B — manual (4 terminals)
 
-If you want to run it by hand to see what each piece does:
+Use this if you want to see each piece's output live, or to debug a failure
+from path A.
 
+**Terminal 1 — TUN device:**
 ```bash
-# Terminal 1 — TUN device
 bash client/scripts/tuntap.sh "$USER"
-
-# Terminal 2 — server (UDP :8080)
-./gradlew :server:run --args="8080"
-
-# Terminal 3 — client (TUN ↔ UDP to 127.0.0.1:8080)
-./gradlew :client:run --args="127.0.0.1 8080"
-
-# Terminal 4 — curl pinned to the kanon TUN (sudo is needed for SO_BINDTODEVICE)
-sudo curl -v --interface kanon http://1.1.1.1/
-
-# Cleanup
-bash client/scripts/cleanup.sh
+ip addr show kanon          # expect: kanon, inet 10.0.1.1/24, MTU 1024
 ```
 
-While the demo is running you can attach Wireshark to either side's pcap-ng
-stream — see [Debugging with Wireshark](#debugging-with-wireshark) below.
+**Terminal 2 — server:**
+```bash
+./gradlew :server:run --args="8080"
+# expect log: "Server listening on default port: 8080"
+# verify in another shell:  ss -lun | grep 8080
+```
+
+**Terminal 3 — client:**
+```bash
+./gradlew :client:run --args="127.0.0.1 8080"
+# expect logs: "Opened TUN/TAP device" and "Created TUN/TAP device"
+```
+
+**Terminal 4 — curl through the proxy:**
+```bash
+sudo curl -v --max-time 15 --interface kanon http://1.1.1.1/
+```
+Success looks like a real HTTP response from `1.1.1.1` (almost certainly a
+`301 Moved Permanently` to HTTPS — that proves the round trip).
+
+Tear-down:
+```bash
+# Ctrl-C terminal 3 (client), then terminal 2 (server)
+bash client/scripts/cleanup.sh
+ip link show kanon || echo "kanon gone"
+```
+If cleanup ever reports `kanon interface is still present`, run
+`sudo lsof /dev/net/tun` to find what's still holding the fd.
+
+### Watching packets while the demo runs
+
+`kanon` is a regular kernel interface, so on Linux the easiest capture is
+plain libpcap on the device itself. The in-process pcap-ng dumpers
+([packetdumper](https://github.com/compscidr/packetdumper)) are also exposed
+in case you want to see the proxy's egress side (and they're what the Android
+app uses where you can't `tcpdump` the VPN interface from your laptop):
+
+```bash
+sudo wireshark -k -i kanon                  # client/TUN leg, native libpcap
+wireshark -k -i TCP@127.0.0.1:19000         # client-side in-process dumper (same packets)
+wireshark -k -i TCP@127.0.0.1:19001         # server-side dumper (proxy's outbound to public Internet)
+```
+
+See [Debugging with Wireshark](#debugging-with-wireshark) below for more on
+the in-process dumpers.
 
 ## Debugging with Wireshark
 
