@@ -10,10 +10,6 @@ four kanonproxy modules (`core`, `client`, `server`, `android`).
 
 ```mermaid
 flowchart TD
-    knet["<b>knet</b><br/>parses raw IP bytes<br/>into Packet objects;<br/>serializes them back"]
-    icmp["<b>icmp</b><br/>sends real ICMP echoes;<br/>platform-specific:<br/>IcmpLinux / IcmpAndroid"]
-    pd["<b>packetdumper</b><br/>writes pcap-ng / hex-dump<br/>captures to a file or<br/>live TCP server"]
-
     subgraph kanon["<b>kanonproxy</b>"]
         direction LR
         core["<b>core</b><br/>proxy logic &amp; sessions"]
@@ -22,9 +18,13 @@ flowchart TD
         android["<b>android</b><br/>sample VPN app"]
     end
 
-    knet -- "Packet, IpHeader, TcpHeader,<br/>UdpHeader, IcmpFactory, …" --> kanon
-    icmp -- "Icmp.ping(),<br/>IcmpV4/V6EchoPacket,<br/>DestinationUnreachable…" --> kanon
-    pd -- "AbstractPacketDumper,<br/>PcapNgTcpServerPacketDumper,<br/>DummyPacketDumper, EtherType" --> kanon
+    knet["<b>knet</b><br/>parses raw IP bytes<br/>into Packet objects;<br/>serializes them back"]
+    icmp["<b>icmp</b><br/>sends real ICMP echoes;<br/>platform-specific:<br/>IcmpLinux / IcmpAndroid"]
+    pd["<b>packetdumper</b><br/>writes pcap-ng / hex-dump<br/>captures to a file or<br/>live TCP server"]
+
+    kanon -- "uses: Packet, IpHeader, TcpHeader,<br/>UdpHeader, IcmpFactory, …" --> knet
+    kanon -- "uses: Icmp.ping(),<br/>IcmpV4/V6EchoPacket,<br/>DestinationUnreachable…" --> icmp
+    kanon -- "uses: AbstractPacketDumper,<br/>PcapNgTcpServerPacketDumper,<br/>DummyPacketDumper, EtherType" --> pd
 
     classDef lib fill:#4f6df0,stroke:#1a2a8c,stroke-width:2px,color:#ffffff;
     classDef mod fill:#2da44e,stroke:#1a6b34,stroke-width:2px,color:#ffffff;
