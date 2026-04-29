@@ -7,6 +7,15 @@ An anonymous proxy written in kotlin.
 For a deeper architectural overview of how the modules and external libraries fit together,
 see [docs/architecture.md](docs/architecture.md).
 
+## Demo videos
+
+Two short clips of the Android sample app in action (click to play on YouTube):
+
+| Android demo | Android demo with Wireshark |
+|:---:|:---:|
+| [![Android demo](https://img.youtube.com/vi/wlaYF5m-GBo/maxresdefault.jpg)](https://youtu.be/wlaYF5m-GBo) | [![Android demo with Wireshark](https://img.youtube.com/vi/zhUrEmBCZSM/maxresdefault.jpg)](https://youtu.be/zhUrEmBCZSM) |
+| The `android` module running as a VPN service and proxying traffic on a real device. | The same app with Wireshark attached to the in-app `PcapNgTcpServerPacketDumper`, watching packets go through the proxy live. |
+
 ## Modules
 
 There are four modules in this project:
@@ -84,3 +93,41 @@ val response = kanonProxy.takeResponse()
 ```
 
 There are more examples of usage in the [tests](core/src/test/kotlin/com/jasonernst/kanonproxy).
+
+## Debugging with Wireshark
+
+Both the reference server/client and the Android sample app embed a
+[`PcapNgTcpServerPacketDumper`](https://github.com/compscidr/packetdumper) that can
+expose a live pcap-ng stream over TCP. Wireshark attaches to it directly, no PCAP
+files on disk:
+
+```bash
+wireshark -k -i TCP@<host>:<port>
+```
+
+`-k` starts capture immediately; `-i TCP@host:port` is Wireshark's pcap-ng-over-TCP
+source. The host and port depend on where the dumper is running:
+
+- **`LinuxProxyClient`** — listens on `PcapNgTcpServerPacketDumper.DEFAULT_PORT`
+  (`19000`) on localhost:
+  ```bash
+  wireshark -k -i TCP@127.0.0.1:19000
+  ```
+
+- **`ProxyServer.main`** — listens on `PcapNgTcpServerPacketDumper.DEFAULT_PORT + 1`
+  (`19001`) on localhost, to avoid clashing with a co-located client:
+  ```bash
+  wireshark -k -i TCP@127.0.0.1:19001
+  ```
+
+- **Android sample app** — the dumper is *not* started with the VPN; you have to
+  enable it from the app's UI (the Wireshark/pcap-server toggle, which calls
+  `startPcapServer()`). Once enabled it listens on the phone's Wi-Fi interface, so
+  `127.0.0.1` will not work from your computer. Use the **phone's Wi-Fi IP**, and
+  make sure the phone and the computer running Wireshark are on the **same subnet**
+  (and that no AP isolation / firewall blocks port `19000`):
+  ```bash
+  wireshark -k -i TCP@<phone-wifi-ip>:19000   # e.g. TCP@192.168.1.42:19000
+  ```
+  You can find the phone's Wi-Fi IP under Settings → About phone → Status, or
+  inside the sample app's UI.
