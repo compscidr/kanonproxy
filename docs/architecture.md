@@ -71,9 +71,12 @@ interact with the four kanonproxy modules (`core`, `client`, `server`, `android`
 | ICMP echo / destination-unreachable packet types and codes | **icmp** | `IcmpV4EchoPacket`, `IcmpV6EchoPacket`, `IcmpV4/V6DestinationUnreachablePacket`, `IcmpV4/V6DestinationUnreachableCodes` |
 
 Key point: **knet handles every other protocol end-to-end** (parse + build + serialize).
-**icmp is the only protocol where kanonproxy actually opens an outbound socket of its own** —
-TCP/UDP get a normal `SocketChannel`/`DatagramChannel`, but ICMP needs raw-socket privileges,
-so it's delegated to the icmp lib (which has platform-specific implementations).
+For TCP and UDP, kanonproxy itself opens the outbound connections using ordinary
+`SocketChannel` / `DatagramChannel` instances inside `AnonymousTcpSession` / `UdpSession`.
+**ICMP is the exception**: because emitting a real ICMP echo requires privileged raw-socket
+access (and differs between Linux and Android), that emission is delegated to the icmp
+library via `Icmp.ping(...)`, with `IcmpLinux` / `IcmpAndroid` providing the platform
+implementation.
 
 ## 3. Where each library is wired in
 
