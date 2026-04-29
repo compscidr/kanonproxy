@@ -4,7 +4,40 @@ This is an onboarding-oriented map of how the two external libraries
 [knet](https://github.com/compscidr/knet) and [icmp](https://github.com/compscidr/icmp)
 interact with the four kanonproxy modules (`core`, `client`, `server`, `android`).
 
-## 1. Data flow — one packet round-trip
+## 1. Repo relationships at a glance
+
+```
+        ┌─────────────────┐         ┌─────────────────┐
+        │      knet       │         │      icmp       │
+        │  (parses raw IP │         │  (sends real    │
+        │   bytes into    │         │   ICMP echoes,  │
+        │   Packet objs;  │         │   platform-     │
+        │   serializes    │         │   specific:     │
+        │   them back)    │         │   IcmpLinux /   │
+        │                 │         │   IcmpAndroid)  │
+        └────────┬────────┘         └────────┬────────┘
+                 │                           │
+                 │  Packet, IpHeader,        │  Icmp.ping(),
+                 │  TcpHeader, UdpHeader,    │  IcmpV4/V6EchoPacket,
+                 │  IcmpFactory, …           │  DestinationUnreachable…
+                 ▼                           ▼
+        ┌─────────────────────────────────────────────┐
+        │                 kanonproxy                  │
+        │                                             │
+        │   core      ── proxy logic & sessions       │
+        │   client    ── TUN/VPN ↔ proxy server       │
+        │   server    ── UDP listener for clients     │
+        │   android   ── sample VPN app               │
+        └─────────────────────────────────────────────┘
+```
+
+knet and icmp are independent libraries (separate repos, separate
+artifacts on Maven Central) that kanonproxy depends on. knet is the
+"what is this packet?" library; icmp is the "actually emit a real
+ping" library. kanonproxy stitches them together with its own session
+management, TCP state machine, and platform glue.
+
+## 2. Data flow — one packet round-trip
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -60,7 +93,7 @@ interact with the four kanonproxy modules (`core`, `client`, `server`, `android`
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 2. Library responsibilities — who owns what
+## 3. Library responsibilities — who owns what
 
 | Concern | Library | What it gives kanonproxy |
 |---|---|---|
@@ -78,7 +111,7 @@ access (and differs between Linux and Android), that emission is delegated to th
 library via `Icmp.ping(...)`, with `IcmpLinux` / `IcmpAndroid` providing the platform
 implementation.
 
-## 3. Where each library is wired in
+## 4. Where each library is wired in
 
 - **`KAnonProxy(icmp: Icmp, ...)`** — single constructor injection point. Caller passes
   `IcmpLinux` (server `main`) or `IcmpAndroid` (`KAnonVpnService` on Android).
