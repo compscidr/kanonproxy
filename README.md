@@ -9,13 +9,12 @@ see [docs/architecture.md](docs/architecture.md).
 
 ## Demo videos
 
-Two short clips of the Android sample app in action:
+Two short clips of the Android sample app in action (click to play on YouTube):
 
-- [Android demo](https://youtu.be/wlaYF5m-GBo) — the `android` module running as a
-  VPN service and proxying traffic on a real device.
-- [Android demo with Wireshark](https://youtu.be/zhUrEmBCZSM) — the same app, but
-  with Wireshark attached to the in-app `PcapNgTcpServerPacketDumper` so you can
-  watch the packets going through the proxy live.
+| Android demo | Android demo with Wireshark |
+|:---:|:---:|
+| [![Android demo](https://img.youtube.com/vi/wlaYF5m-GBo/maxresdefault.jpg)](https://youtu.be/wlaYF5m-GBo) | [![Android demo with Wireshark](https://img.youtube.com/vi/zhUrEmBCZSM/maxresdefault.jpg)](https://youtu.be/zhUrEmBCZSM) |
+| The `android` module running as a VPN service and proxying traffic on a real device. | The same app with Wireshark attached to the in-app `PcapNgTcpServerPacketDumper`, watching packets go through the proxy live. |
 
 ## Modules
 
