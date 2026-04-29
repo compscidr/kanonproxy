@@ -7,6 +7,16 @@ An anonymous proxy written in kotlin.
 For a deeper architectural overview of how the modules and external libraries fit together,
 see [docs/architecture.md](docs/architecture.md).
 
+## Demo videos
+
+Two short clips of the Android sample app in action:
+
+- [Android demo](https://youtu.be/wlaYF5m-GBo) — the `android` module running as a
+  VPN service and proxying traffic on a real device.
+- [Android demo with Wireshark](https://youtu.be/zhUrEmBCZSM) — the same app, but
+  with Wireshark attached to the in-app `PcapNgTcpServerPacketDumper` so you can
+  watch the packets going through the proxy live.
+
 ## Modules
 
 There are four modules in this project:
@@ -84,3 +94,35 @@ val response = kanonProxy.takeResponse()
 ```
 
 There are more examples of usage in the [tests](core/src/test/kotlin/com/jasonernst/kanonproxy).
+
+## Debugging with Wireshark
+
+Both the reference server/client and the Android sample app embed a
+[`PcapNgTcpServerPacketDumper`](https://github.com/compscidr/packetdumper) that exposes
+a live pcap-ng stream over TCP on port `19000`. Wireshark can attach to it directly
+with no PCAP files on disk:
+
+```bash
+wireshark -k -i TCP@<host>:19000
+```
+
+`-k` starts capture immediately; `-i TCP@host:port` is Wireshark's pcap-ng-over-TCP
+source. Pick `<host>` based on where the dumper is running:
+
+- **Linux client / server** (running on the same machine as Wireshark):
+  ```bash
+  # client (LinuxProxyClient): default port 19000
+  wireshark -k -i TCP@127.0.0.1:19000
+  # server (ProxyServer.main): runs on DEFAULT_PORT + 1 = 19001
+  wireshark -k -i TCP@127.0.0.1:19001
+  ```
+
+- **Android sample app**: the dumper listens on the phone's Wi-Fi interface, so
+  `127.0.0.1` will not work from your computer. Use the **phone's Wi-Fi IP**, and
+  make sure the phone and the computer running Wireshark are on the **same subnet**
+  (and that no AP isolation / firewall blocks port `19000`):
+  ```bash
+  wireshark -k -i TCP@<phone-wifi-ip>:19000   # e.g. TCP@192.168.1.42:19000
+  ```
+  You can find the phone's Wi-Fi IP under Settings → About phone → Status, or
+  inside the sample app's UI.
