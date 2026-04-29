@@ -14,8 +14,8 @@ flowchart TD
     icmp["<b>icmp</b><br/>sends real ICMP echoes;<br/>platform-specific:<br/>IcmpLinux / IcmpAndroid"]
     pd["<b>packetdumper</b><br/>writes pcap-ng / hex-dump<br/>captures to a file or<br/>live TCP server"]
 
-    subgraph kanon["kanonproxy"]
-        direction TB
+    subgraph kanon["<b>kanonproxy</b>"]
+        direction LR
         core["<b>core</b><br/>proxy logic &amp; sessions"]
         client["<b>client</b><br/>TUN/VPN ↔ proxy server"]
         server["<b>server</b><br/>UDP listener for clients"]
@@ -26,10 +26,12 @@ flowchart TD
     icmp -- "Icmp.ping(),<br/>IcmpV4/V6EchoPacket,<br/>DestinationUnreachable…" --> kanon
     pd -- "AbstractPacketDumper,<br/>PcapNgTcpServerPacketDumper,<br/>DummyPacketDumper, EtherType" --> kanon
 
-    classDef lib fill:#eef,stroke:#557,stroke-width:1px;
-    classDef mod fill:#efe,stroke:#575,stroke-width:1px;
+    classDef lib fill:#4f6df0,stroke:#1a2a8c,stroke-width:2px,color:#ffffff;
+    classDef mod fill:#2da44e,stroke:#1a6b34,stroke-width:2px,color:#ffffff;
+    classDef group fill:#1f6feb22,stroke:#58a6ff,stroke-width:2px,color:#c9d1d9;
     class knet,icmp,pd lib;
     class core,client,server,android mod;
+    class kanon group;
 ```
 
 knet, icmp, and packetdumper are independent libraries (separate repos,
@@ -54,7 +56,7 @@ state machine, and platform glue.
 flowchart TD
     os[("OS / TUN-TAP / Android VPN<br/>raw IP byte stream")]
 
-    subgraph clientMod["client/ — LinuxProxyClient · AndroidClient extend ProxyClient"]
+    subgraph clientMod["<b>client/</b> — LinuxProxyClient · AndroidClient extend ProxyClient"]
         cParse["knet: Packet.parseStream"]
         cChan["DatagramChannel<br/>(UDP to server)"]
         cWrite["tunWrite ← packet.toByteArray()"]
@@ -62,7 +64,7 @@ flowchart TD
         cChan -- "from server" --> cWrite
     end
 
-    subgraph serverMod["server/ — ProxyServer"]
+    subgraph serverMod["<b>server/</b> — ProxyServer"]
         sRead["readFromClient()<br/>knet: Packet.parseStream"]
         sHandle["kAnonProxy.handlePackets()"]
         sTake["kAnonProxy.takeResponse()<br/>via ProxySession"]
@@ -71,7 +73,7 @@ flowchart TD
         sTake --> sOut
     end
 
-    subgraph coreMod["core/ — KAnonProxy (pure logic, no I/O of its own)"]
+    subgraph coreMod["<b>core/</b> — KAnonProxy (pure logic, no I/O of its own)"]
         kHandle["handlePacket(packet)"]
         kSess["Session table<br/>(per clientAddress, per 5-tuple)"]
         kTcpUdp["AnonymousTcpSession / UdpSession<br/>real SocketChannel / DatagramChannel"]
@@ -82,8 +84,8 @@ flowchart TD
         kTcpUdp -.->|on connect failure| kErr
     end
 
-    pdLib(["packetdumper<br/>dumpBuffer(...)"])
-    icmpLib(["icmp lib<br/>IcmpLinux / IcmpAndroid"])
+    pdLib(["<b>packetdumper</b><br/>dumpBuffer(...)"])
+    icmpLib(["<b>icmp</b> lib<br/>IcmpLinux / IcmpAndroid"])
     inet[("public Internet")]
 
     os -- "bytes in" --> cParse
@@ -102,8 +104,14 @@ flowchart TD
     sRead -.->|each packet| pdLib
     sOut -.->|each packet| pdLib
 
-    classDef ext fill:#fee,stroke:#a55;
+    classDef ext fill:#d97706,stroke:#7c4a06,stroke-width:2px,color:#ffffff;
+    classDef io fill:#6b7280,stroke:#1f2937,stroke-width:2px,color:#ffffff;
+    classDef node fill:#1f6feb,stroke:#0d419d,stroke-width:2px,color:#ffffff;
+    classDef group fill:#1f6feb22,stroke:#58a6ff,stroke-width:2px,color:#c9d1d9;
     class pdLib,icmpLib ext;
+    class os,inet io;
+    class cParse,cChan,cWrite,sRead,sHandle,sTake,sOut,kHandle,kSess,kTcpUdp,kIcmp,kErr node;
+    class clientMod,serverMod,coreMod group;
 ```
 
 ## 3. Library responsibilities — who owns what
