@@ -97,26 +97,32 @@ There are more examples of usage in the [tests](core/src/test/kotlin/com/jasoner
 ## Debugging with Wireshark
 
 Both the reference server/client and the Android sample app embed a
-[`PcapNgTcpServerPacketDumper`](https://github.com/compscidr/packetdumper) that exposes
-a live pcap-ng stream over TCP on port `19000`. Wireshark can attach to it directly
-with no PCAP files on disk:
+[`PcapNgTcpServerPacketDumper`](https://github.com/compscidr/packetdumper) that can
+expose a live pcap-ng stream over TCP. Wireshark attaches to it directly, no PCAP
+files on disk:
 
 ```bash
-wireshark -k -i TCP@<host>:19000
+wireshark -k -i TCP@<host>:<port>
 ```
 
 `-k` starts capture immediately; `-i TCP@host:port` is Wireshark's pcap-ng-over-TCP
-source. Pick `<host>` based on where the dumper is running:
+source. The host and port depend on where the dumper is running:
 
-- **Linux client / server** (running on the same machine as Wireshark):
+- **`LinuxProxyClient`** — listens on `PcapNgTcpServerPacketDumper.DEFAULT_PORT`
+  (`19000`) on localhost:
   ```bash
-  # client (LinuxProxyClient): default port 19000
   wireshark -k -i TCP@127.0.0.1:19000
-  # server (ProxyServer.main): runs on DEFAULT_PORT + 1 = 19001
+  ```
+
+- **`ProxyServer.main`** — listens on `PcapNgTcpServerPacketDumper.DEFAULT_PORT + 1`
+  (`19001`) on localhost, to avoid clashing with a co-located client:
+  ```bash
   wireshark -k -i TCP@127.0.0.1:19001
   ```
 
-- **Android sample app**: the dumper listens on the phone's Wi-Fi interface, so
+- **Android sample app** — the dumper is *not* started with the VPN; you have to
+  enable it from the app's UI (the Wireshark/pcap-server toggle, which calls
+  `startPcapServer()`). Once enabled it listens on the phone's Wi-Fi interface, so
   `127.0.0.1` will not work from your computer. Use the **phone's Wi-Fi IP**, and
   make sure the phone and the computer running Wireshark are on the **same subnet**
   (and that no AP isolation / firewall blocks port `19000`):
