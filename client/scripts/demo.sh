@@ -32,13 +32,24 @@ SERVER_PID=$!
 echo "      server pid=$SERVER_PID"
 
 echo "[3/4] Waiting for server to start listening..."
+SERVER_READY=0
 for i in $(seq 1 30); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "      server process exited before binding UDP :8080; see $LOG_DIR/server.log" >&2
+        exit 1
+    fi
     if ss -lun | grep -q ":8080"; then
         echo "      server is listening"
+        SERVER_READY=1
         break
     fi
     sleep 1
 done
+
+if [ "$SERVER_READY" -ne 1 ]; then
+    echo "      timed out waiting for server to bind UDP :8080; see $LOG_DIR/server.log" >&2
+    exit 1
+fi
 
 echo "[3.5/4] Starting proxy client (logs: $LOG_DIR/client.log)..."
 ./gradlew --no-daemon -q :client:run --args="127.0.0.1 8080" \

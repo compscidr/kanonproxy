@@ -3,17 +3,32 @@
 # and delete the kanon TUN interface. Idempotent: safe to run when nothing
 # is up.
 
-# Kill the JVM processes that hold the TUN fd. Use SIGTERM first so they
-# release the fd cleanly, then SIGKILL anything that didn't exit.
-for pat in "ProxyServer" "LinuxProxyClient" "GradleWorkerMain" "java -jar" "java -Djava.library.path"; do
-    sudo pkill -f "$pat" 2>/dev/null || true
+# Kill the JVM processes that hold the TUN fd. Scope by current user so we
+# don't accidentally take out unrelated JVMs on the host that happen to have
+# matching strings on their command line. Use SIGTERM first so the JVM has
+# a chance to release the TUN fd cleanly, then SIGKILL anything that didn't
+# exit.
+CURRENT_UID="$(id -u)"
+PATTERNS=("ProxyServer" "LinuxProxyClient" "GradleWorkerMain" "java -jar" "java -Djava.library.path")
+
+kill_matching() {
+    local signal="$1"
+    local pattern="$2"
+    local pids
+    pids="$(pgrep -u "$CURRENT_UID" -f -- "$pattern" 2>/dev/null || true)"
+    [ -n "$pids" ] || return 0
+    sudo kill "$signal" $pids 2>/dev/null || true
+}
+
+for pat in "${PATTERNS[@]}"; do
+    kill_matching -TERM "$pat"
 done
 # Give the JVMs a moment to actually release the TUN fd. Without this,
 # `ip tuntap del` can race the kernel cleanup and leave the interface
 # stuck in a DOWN state.
 sleep 1
-for pat in "ProxyServer" "LinuxProxyClient" "GradleWorkerMain"; do
-    sudo pkill -9 -f "$pat" 2>/dev/null || true
+for pat in "${PATTERNS[@]}"; do
+    kill_matching -KILL "$pat"
 done
 
 if ip link show kanon &>/dev/null; then
