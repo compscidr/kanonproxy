@@ -8,31 +8,28 @@ four kanonproxy modules (`core`, `client`, `server`, `android`).
 
 ## 1. Repo relationships at a glance
 
-```
-   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-   │      knet       │  │      icmp       │  │  packetdumper   │
-   │  (parses raw IP │  │  (sends real    │  │  (writes pcap-  │
-   │   bytes into    │  │   ICMP echoes,  │  │   ng / hex-dump │
-   │   Packet objs;  │  │   platform-     │  │   captures of   │
-   │   serializes    │  │   specific:     │  │   packets to a  │
-   │   them back)    │  │   IcmpLinux /   │  │   file or live  │
-   │                 │  │   IcmpAndroid)  │  │   TCP server)   │
-   └────────┬────────┘  └────────┬────────┘  └────────┬────────┘
-            │                    │                    │
-            │  Packet,            │  Icmp.ping(),     │  AbstractPacketDumper,
-            │  IpHeader,          │  IcmpV4/V6        │  PcapNgTcpServerPacketDumper,
-            │  TcpHeader,         │  EchoPacket,      │  DummyPacketDumper,
-            │  UdpHeader,         │  Destination      │  EtherType
-            │  IcmpFactory, …     │  Unreachable…     │
-            ▼                     ▼                    ▼
-   ┌──────────────────────────────────────────────────────────┐
-   │                       kanonproxy                         │
-   │                                                          │
-   │   core      ── proxy logic & sessions                    │
-   │   client    ── TUN/VPN ↔ proxy server                    │
-   │   server    ── UDP listener for clients                  │
-   │   android   ── sample VPN app                            │
-   └──────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    knet["<b>knet</b><br/>parses raw IP bytes<br/>into Packet objects;<br/>serializes them back"]
+    icmp["<b>icmp</b><br/>sends real ICMP echoes;<br/>platform-specific:<br/>IcmpLinux / IcmpAndroid"]
+    pd["<b>packetdumper</b><br/>writes pcap-ng / hex-dump<br/>captures to a file or<br/>live TCP server"]
+
+    subgraph kanon["kanonproxy"]
+        direction TB
+        core["<b>core</b><br/>proxy logic &amp; sessions"]
+        client["<b>client</b><br/>TUN/VPN ↔ proxy server"]
+        server["<b>server</b><br/>UDP listener for clients"]
+        android["<b>android</b><br/>sample VPN app"]
+    end
+
+    knet -- "Packet, IpHeader, TcpHeader,<br/>UdpHeader, IcmpFactory, …" --> kanon
+    icmp -- "Icmp.ping(),<br/>IcmpV4/V6EchoPacket,<br/>DestinationUnreachable…" --> kanon
+    pd -- "AbstractPacketDumper,<br/>PcapNgTcpServerPacketDumper,<br/>DummyPacketDumper, EtherType" --> kanon
+
+    classDef lib fill:#eef,stroke:#557,stroke-width:1px;
+    classDef mod fill:#efe,stroke:#575,stroke-width:1px;
+    class knet,icmp,pd lib;
+    class core,client,server,android mod;
 ```
 
 knet, icmp, and packetdumper are independent libraries (separate repos,
@@ -53,60 +50,60 @@ state machine, and platform glue.
 
 ## 2. Data flow — one packet round-trip
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  OS / TUN-TAP / Android VPN  (raw IP byte stream)                       │
-└─────────────────────┬───────────────────────────────────▲───────────────┘
-                      │ bytes in                          │ bytes out
-                      ▼                                   │
-┌─────────────────────────────────────────────────────────────────────────┐
-│  client/  (LinuxProxyClient · AndroidClient extend ProxyClient)         │
-│                                                                         │
-│   tunRead() ──▶ ┌──────────────┐    parsed Packets    ┌──────────────┐  │
-│                 │ knet:        │  ───────────────▶    │ DatagramChan │  │
-│                 │ Packet       │   ▲                  │ (UDP to      │  │
-│                 │ .parseStream │   │ each packet      │  server)     │  │
-│                 └──────────────┘   │                  └──────┬───────┘  │
-│                                    ▼ packetdumper.dumpBuffer()│         │
-│   tunWrite() ◀──── packet.toByteArray() ◀── parseStream ◀────┘          │
-└─────────────────────────────────────────────────────────────────────────┘
-                      │ UDP                              ▲ UDP
-                      ▼                                  │
-┌─────────────────────────────────────────────────────────────────────────┐
-│  server/ ProxyServer                                                    │
-│                                                                         │
-│   readFromClient() ─▶ knet:Packet.parseStream(buffer) ──┐               │
-│                              │                          ▼               │
-│                              ▼ packetdumper   kAnonProxy.handlePackets()│
-│                                                                         │
-│   enqueueOutgoing(buffer) ◀── ProxySession ◀── kAnonProxy.takeResponse()│
-│                              │                                          │
-│                              ▼ packetdumper.dumpBuffer() (per packet)   │
-└─────────────────────────────────────────────────────────────────────────┘
-                      │                                  ▲
-                      ▼ Packet (knet types)              │ Packet (knet types)
-┌─────────────────────────────────────────────────────────────────────────┐
-│  core/ KAnonProxy   (the brain — pure logic, no I/O of its own)         │
-│                                                                         │
-│   handlePacket(packet)                                                  │
-│     ├─ packet.nextHeaders is TransportHeader (knet)                     │
-│     │     └─▶ Session table (per clientAddress, per 5-tuple)            │
-│     │           ├─ UdpSession  ──┐                                      │
-│     │           └─ AnonymousTcp ─┤  real OS Socket/DatagramChannel      │
-│     │              Session       │  ──▶ public Internet                 │
-│     │                            ▼                                      │
-│     │                     trafficAccounting + VpnProtector              │
-│     │                                                                   │
-│     └─ packet.nextHeaders is IcmpNextHeaderWrapper (knet)               │
-│           └─▶ icmp.ping(destination)   ◀── icmp lib (IcmpLinux/Android) │
-│                 ├─ Success ─▶ build IcmpV4/V6EchoPacket reply           │
-│                 └─ Failure ─▶ IcmpV4/V6DestinationUnreachablePacket     │
-│                       (wrap in knet Ipv4Header/Ipv6Header → outQueue)   │
-│                                                                         │
-│   Session error path: Session.handleExceptionOnRemoteChannel()          │
-│     └─▶ knet:IcmpFactory.createDestinationUnreachable(...)              │
-│         (uses icmp lib's V4/V6 unreachable codes as enum values)        │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    os[("OS / TUN-TAP / Android VPN<br/>raw IP byte stream")]
+
+    subgraph clientMod["client/ — LinuxProxyClient · AndroidClient extend ProxyClient"]
+        cParse["knet: Packet.parseStream"]
+        cChan["DatagramChannel<br/>(UDP to server)"]
+        cWrite["tunWrite ← packet.toByteArray()"]
+        cParse -- "parsed Packets" --> cChan
+        cChan -- "from server" --> cWrite
+    end
+
+    subgraph serverMod["server/ — ProxyServer"]
+        sRead["readFromClient()<br/>knet: Packet.parseStream"]
+        sHandle["kAnonProxy.handlePackets()"]
+        sTake["kAnonProxy.takeResponse()<br/>via ProxySession"]
+        sOut["enqueueOutgoing(buffer)"]
+        sRead --> sHandle
+        sTake --> sOut
+    end
+
+    subgraph coreMod["core/ — KAnonProxy (pure logic, no I/O of its own)"]
+        kHandle["handlePacket(packet)"]
+        kSess["Session table<br/>(per clientAddress, per 5-tuple)"]
+        kTcpUdp["AnonymousTcpSession / UdpSession<br/>real SocketChannel / DatagramChannel"]
+        kIcmp["icmp.ping(destination)<br/>→ Success: IcmpV4/V6EchoPacket reply<br/>→ Failure: DestinationUnreachable"]
+        kErr["Session.handleExceptionOnRemoteChannel<br/>→ knet:IcmpFactory.createDestinationUnreachable"]
+        kHandle -- "TransportHeader (knet)" --> kSess --> kTcpUdp
+        kHandle -- "IcmpNextHeaderWrapper (knet)" --> kIcmp
+        kTcpUdp -.->|on connect failure| kErr
+    end
+
+    pdLib(["packetdumper<br/>dumpBuffer(...)"])
+    icmpLib(["icmp lib<br/>IcmpLinux / IcmpAndroid"])
+    inet[("public Internet")]
+
+    os -- "bytes in" --> cParse
+    cWrite -- "bytes out" --> os
+    cChan == "UDP" ==> sRead
+    sOut == "UDP" ==> cChan
+    sHandle == "Packet (knet)" ==> kHandle
+    kTcpUdp -- "responses" --> sTake
+    kIcmp -- "responses" --> sTake
+
+    kTcpUdp <--> inet
+    kIcmp <-.-> icmpLib
+
+    cParse -.->|each packet| pdLib
+    cWrite -.->|each packet| pdLib
+    sRead -.->|each packet| pdLib
+    sOut -.->|each packet| pdLib
+
+    classDef ext fill:#fee,stroke:#a55;
+    class pdLib,icmpLib ext;
 ```
 
 ## 3. Library responsibilities — who owns what
