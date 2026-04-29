@@ -2,25 +2,41 @@
 [![JVM Tests](https://github.com/compscidr/kanonproxy/actions/workflows/test.yml/badge.svg)](https://github.com/compscidr/kanonproxy/actions/workflows/test.yml)&nbsp;
 [![codecov](https://codecov.io/gh/compscidr/kanonproxy/graph/badge.svg?token=yBstrWw9Mm)](https://codecov.io/gh/compscidr/kanonproxy)&nbsp;
 
-An anonymous proxy written in kotlin. 
+An anonymous proxy written in kotlin.
 
-There are four modules for this project.
+For a deeper architectural overview of how the modules and external libraries fit together,
+see [docs/architecture.md](docs/architecture.md).
 
-## Core
-The core module is meant to be a library that can run on Android or Linux. It does not 
-provide the client / server functionality. It is able to process packets which have 
-been parsed by https://github.com/compscidr/knet, manage sessions and make outgoing 
-anonymous requests based on the incoming traffic. It also receives the return traffic, 
-and puts them into a queue. Outgoing ICMP requests are made by https://github.com/compscidr/icmp
+## Modules
 
-It is up to consumers of the this library to implement a server or a tun/tap adapter, or a
-VPN service on Android to make use of this library.
+There are four modules in this project:
 
-There are example implementations of a client and server in each of the respective modules
-as well. 
+### `core`
+The core module is meant to be a library that can run on Android or Linux. It does not
+provide the client / server functionality. It is able to process packets which have
+been parsed by https://github.com/compscidr/knet, manage sessions and make outgoing
+anonymous requests based on the incoming traffic. It also receives the return traffic,
+and puts them into a queue. Outgoing ICMP requests are made by https://github.com/compscidr/icmp.
 
-Lastly there is a sample Android app which uses a local client and server alongside the
-Android VPN functionality to intercept the packets.
+It is up to consumers of this library to implement a server, a tun/tap adapter, or a
+VPN service on Android to make use of it.
+
+### `server`
+A reference UDP-based proxy server (`ProxyServer`) built on top of `core`. It listens on
+a `DatagramChannel`, parses inbound packets with knet, dispatches them to `KAnonProxy`,
+and returns responses back to the originating client. Run it directly via
+`ProxyServer.main` (defaults to port `8080`).
+
+### `client`
+A reference client (`ProxyClient`) that reads/writes a TUN adapter and tunnels the
+parsed packets over UDP to a `ProxyServer`. `LinuxProxyClient` is the Linux entry point;
+helper scripts to set up and tear down the TUN device live in [`client/scripts/`](client/scripts).
+See [`client/README.md`](client/README.md) for setup details.
+
+### `android`
+A sample Android app (`KAnonVpnService` + `MainActivity`) that uses Android's `VpnService`
+to intercept packets. It runs both `ProxyServer` and `AndroidClient` in-process, wired to
+`IcmpAndroid` for ICMP support.
 
 ## Usage
 The examples below show a contrived example where the packets are manually constructed. This
@@ -67,4 +83,4 @@ kAnonProxy.handlePackets(packets)
 val response = kanonProxy.takeResponse()
 ```
 
-There are more examples of usage in the [tests](src/test/kotlin/com/jasonernst/kanonproxy)
+There are more examples of usage in the [tests](core/src/test/kotlin/com/jasonernst/kanonproxy).
