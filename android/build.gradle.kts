@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.jasonernst.kanonproxy"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.jasonernst.kanonproxy"
